@@ -720,6 +720,44 @@ function renderLock(err = '') {
 }
 
 /* --- Installation comme application (PWA) --- */
+
+/* =====================================================================
+   Thousand Labs — section « Installer l'application » (commune à toutes les applis)
+   TLI.html(nom, classeBouton) → bloc à insérer dans les réglages.
+   • Bouton « Installer » quand le navigateur propose l'installation complète
+     (appli sans logo de navigateur sur l'icône).
+   • Sinon : explications pas à pas Android / iPhone / ordinateur.
+   ===================================================================== */
+var TLI=(function(){
+  var evt=null,T=function(s){return (TLI&&TLI.t)?TLI.t(s):s};
+  try{addEventListener('beforeinstallprompt',function(e){e.preventDefault();evt=e;upd()});
+      addEventListener('appinstalled',function(){evt=null;upd()})}catch(e){}
+  function sa(){try{return matchMedia('(display-mode: standalone)').matches||navigator.standalone===true}catch(e){return false}}
+  function ios(){var u=navigator.userAgent||'';return /iphone|ipad|ipod/i.test(u)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1)}
+  function inner(name,btn){
+    var st='',S='style="margin:6px 0 0;font-size:13.5px;line-height:1.5;opacity:.85"';
+    if(evt)st='<p style="margin:0 0 8px;font-size:14.5px;line-height:1.5">'+T('Ton navigateur peut installer {app} comme une vraie application : icône propre (sans logo de navigateur), plein écran et ouverture hors ligne.').replace('{app}','<b>'+name+'</b>')+'</p>'
+      +'<button type="button" class="'+btn+'" style="width:100%" onclick="TLI.go()">📲 '+T('Installer {app}').replace('{app}',name)+'</button>'
+      +'<p '+S+'>'+T('Tu as déjà une icône avec le petit logo du navigateur ? Après l\'installation, fais une sauvegarde de tes données, puis supprime l\'ancienne icône.')+'</p>';
+    else if(sa())st='<p style="margin:0;font-size:14.5px;line-height:1.5">✅ '+T('{app} est ouverte comme une application.').replace('{app}','<b>'+name+'</b>')+'</p>'
+      +'<p '+S+'>'+T('Si son icône porte le petit logo de ton navigateur, c\'est un simple raccourci. Pour une installation complète, suis les étapes ci-dessous.')+'</p>';
+    else st='<p style="margin:0;font-size:14.5px;line-height:1.5">'+T('Installe {app} sur ton écran d\'accueil : elle s\'ouvrira comme une vraie application, même sans Internet.').replace('{app}','<b>'+name+'</b>')+'</p>';
+    var A='<p style="margin:10px 0 4px"><b>📱 Android (Chrome, Brave, Samsung Internet)</b></p><ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.55"><li>'+T('Ouvre le lien de l\'appli dans le navigateur, avec Internet.')+'</li><li>'+T('Touche le menu <b>⋮</b> (en haut ou en bas à droite).')+'</li><li>'+T('Choisis <b>« Installer l\'application »</b>. Évite « Ajouter à l\'écran d\'accueil » : ça crée un simple raccourci avec le logo du navigateur.')+'</li><li>'+T('Si « Installer » n\'apparaît pas : recharge la page, attends quelques secondes et réessaie.')+'</li></ol>';
+    var I='<p style="margin:10px 0 4px"><b>🍏 iPhone / iPad (Safari)</b></p><ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.55"><li>'+T('Ouvre le lien dans <b>Safari</b>.')+'</li><li>'+T('Touche <b>Partager</b> (le carré avec une flèche).')+'</li><li>'+T('Choisis <b>« Sur l\'écran d\'accueil »</b>, puis <b>Ajouter</b>.')+'</li></ol><p '+S+'>⚠️ '+T('Sur iPhone, installe l\'appli AVANT de l\'activer, puis ouvre-la toujours depuis son icône : l\'iPhone sépare Safari et les applis installées.')+'</p>';
+    var C='<p style="margin:10px 0 4px"><b>💻 '+T('Ordinateur (Chrome, Edge, Brave)')+'</b></p><p style="margin:0;font-size:14px">'+T('Clique sur l\'icône d\'installation à droite de la barre d\'adresse.')+'</p>';
+    var steps=ios()?I+A+C:A+I+C;
+    return st+'<details style="margin-top:10px"'+(evt||sa()?'':' open')+'><summary style="cursor:pointer;font-weight:600;font-size:14px">'+T('Comment installer, pas à pas')+'</summary>'+steps+'</details>';
+  }
+  var last={};
+  function upd(){try{document.querySelectorAll('[data-tli]').forEach(function(el){el.innerHTML=inner(el.getAttribute('data-tli'),el.getAttribute('data-tlib')||'')})}catch(e){}}
+  return {
+    html:function(name,btn){return '<div data-tli="'+name+'" data-tlib="'+(btn||'')+'">'+inner(name,btn||'')+'</div>'},
+    go:function(){if(!evt)return;var e=evt;e.prompt();(e.userChoice||Promise.resolve()).then(function(){evt=null;upd()},function(){evt=null;upd()})},
+    can:function(){return !!evt},standalone:sa,upd:upd,t:null
+  };
+})();
+TLI.t = s => t(s);
+
 let installPrompt = null;
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const installBtn = (cls = 'btn btn-sm') => isStandalone() ? '' : `<button class="${cls}" data-action="install">📲 ${t("Installer l'application")}</button>`;
@@ -1382,7 +1420,7 @@ views.reglages = () => {
     <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoie-le-toi sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p></div>
   <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span><span class="badge b-green">✓ ${t('Activée')}</span></div><div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
     <div class="flex wrap mt"><button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div></div>
-  <div class="card"><h2>📲 ${t('Application')}</h2><p class="sub mt-s">${isStandalone() ? t('✓ {app} est installé et fonctionne hors ligne.', {app: APP}) : t('Installe {app} sur ton écran d\'accueil pour l\'ouvrir comme une vraie application, même sans Internet.', {app: APP})}</p><div class="flex wrap mt">${installBtn('btn btn-sm')}<button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
+  <div class="card"><h2>📲 ${t("Installer l'application")}</h2><div class="mt-s">${TLI.html(APP, 'btn btn-primary')}</div><div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
     <h3 class="mt-l">⚠️ ${t('Zone sensible')}</h3><button class="btn btn-sm btn-danger mt-s" data-action="wipe">${t('Tout effacer')}</button><p class="hint mt-s">${t('« Tout effacer » conserve ton activation.')}</p></div>
   </div>
   <p class="hint mt" style="text-align:center">${APP} · ${TEAM} · WhatsApp ${CONTACT_FMT}<br>${t('Site officiel')} : <a href="${SITE_URL}" target="_blank" rel="noopener" style="color:var(--primary)">${SITE_URL.replace('https://', '')}</a></p>`;
@@ -1950,6 +1988,23 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Ton navigateur peut installer {app} comme une vraie application : icône propre (sans logo de navigateur), plein écran et ouverture hors ligne.": "Your browser can install {app} as a real app: clean icon (no browser logo), full screen and offline use.",
+"Installer {app}": "Install {app}",
+"Tu as déjà une icône avec le petit logo du navigateur ? Après l'installation, fais une sauvegarde de tes données, puis supprime l'ancienne icône.": "Already have an icon with the small browser logo? After installing, back up your data, then remove the old icon.",
+"{app} est ouverte comme une application.": "{app} is open as an app.",
+"Si son icône porte le petit logo de ton navigateur, c'est un simple raccourci. Pour une installation complète, suis les étapes ci-dessous.": "If its icon shows the small browser logo, it is just a shortcut. For a full install, follow the steps below.",
+"Installe {app} sur ton écran d'accueil : elle s'ouvrira comme une vraie application, même sans Internet.": "Install {app} on your home screen: it will open like a real app, even without Internet.",
+"Ouvre le lien de l'appli dans le navigateur, avec Internet.": "Open the app link in the browser, with Internet.",
+"Touche le menu <b>⋮</b> (en haut ou en bas à droite).": "Tap the <b>⋮</b> menu (top or bottom right).",
+"Choisis <b>« Installer l'application »</b>. Évite « Ajouter à l'écran d'accueil » : ça crée un simple raccourci avec le logo du navigateur.": "Choose <b>\"Install app\"</b>. Avoid \"Add to Home screen\": it creates a simple shortcut with the browser logo.",
+"Si « Installer » n'apparaît pas : recharge la page, attends quelques secondes et réessaie.": "If \"Install\" does not appear: reload the page, wait a few seconds and try again.",
+"Ouvre le lien dans <b>Safari</b>.": "Open the link in <b>Safari</b>.",
+"Touche <b>Partager</b> (le carré avec une flèche).": "Tap <b>Share</b> (the square with an arrow).",
+"Choisis <b>« Sur l'écran d'accueil »</b>, puis <b>Ajouter</b>.": "Choose <b>\"Add to Home Screen\"</b>, then <b>Add</b>.",
+"Sur iPhone, installe l'appli AVANT de l'activer, puis ouvre-la toujours depuis son icône : l'iPhone sépare Safari et les applis installées.": "On iPhone, install the app BEFORE activating it, then always open it from its icon: iPhone keeps Safari and installed apps separate.",
+"Ordinateur (Chrome, Edge, Brave)": "Computer (Chrome, Edge, Brave)",
+"Clique sur l'icône d'installation à droite de la barre d'adresse.": "Click the install icon on the right of the address bar.",
+"Comment installer, pas à pas": "How to install, step by step",
 "Site officiel": "Official website",
 "Sauvegarde impossible : stockage du navigateur plein ou bloqué.": "Saving failed: browser storage is full or blocked.",
 "{app} est activé. Bienvenue !": "{app} is activated. Welcome!",
@@ -2520,6 +2575,23 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Ton navigateur peut installer {app} comme une vraie application : icône propre (sans logo de navigateur), plein écran et ouverture hors ligne.": "Sa navigateur mën na installer {app} niki appli bu wóor : ikon bu set (amul logo navigateur), ekraan bu mat te dox na te amul internet.",
+"Installer {app}": "Installer {app}",
+"Tu as déjà une icône avec le petit logo du navigateur ? Après l'installation, fais une sauvegarde de tes données, puis supprime l'ancienne icône.": "Am nga ba noppi ikon bu am logo navigateur bi ? Ginnaaw installation bi, def sauvegarde say done, te far ikon bu màggat bi.",
+"{app} est ouverte comme une application.": "{app} mi ngi ubbiku niki appli.",
+"Si son icône porte le petit logo de ton navigateur, c'est un simple raccourci. Pour une installation complète, suis les étapes ci-dessous.": "Su ikon bi amee logo navigateur bi, raccourci rekk la. Ngir installation bu mat, toppal pas yi ci suuf.",
+"Installe {app} sur ton écran d'accueil : elle s'ouvrira comme une vraie application, même sans Internet.": "Installer {app} ci sa ekraan : dina ubbiku niki appli bu wóor, du ñàkk internet.",
+"Ouvre le lien de l'appli dans le navigateur, avec Internet.": "Ubbil lien bu appli bi ci navigateur bi, ak internet.",
+"Touche le menu <b>⋮</b> (en haut ou en bas à droite).": "Bësal menu <b>⋮</b> bi (ci kaw walla ci suuf, ci ndijoor).",
+"Choisis <b>« Installer l'application »</b>. Évite « Ajouter à l'écran d'accueil » : ça crée un simple raccourci avec le logo du navigateur.": "Tànnal <b>« Installer l'application »</b>. Bul tànn « Ajouter à l'écran d'accueil » : raccourci rekk lay def ak logo navigateur bi.",
+"Si « Installer » n'apparaît pas : recharge la page, attends quelques secondes et réessaie.": "Su « Installer » feeñul : yeesal xët wi, xaar ay saa te jéemaat.",
+"Ouvre le lien dans <b>Safari</b>.": "Ubbil lien bi ci <b>Safari</b>.",
+"Touche <b>Partager</b> (le carré avec une flèche).": "Bësal <b>Partager</b> (karre ak fleesu).",
+"Choisis <b>« Sur l'écran d'accueil »</b>, puis <b>Ajouter</b>.": "Tànnal <b>« Sur l'écran d'accueil »</b>, te <b>Ajouter</b>.",
+"Sur iPhone, installe l'appli AVANT de l'activer, puis ouvre-la toujours depuis son icône : l'iPhone sépare Safari et les applis installées.": "Ci iPhone, installer appli bi BALAA ngay ko dooxal, te ubbi ko saa yu nekk ci ikon bi : iPhone dafay xàjjale Safari ak appli yi.",
+"Ordinateur (Chrome, Edge, Brave)": "Ordinateur (Chrome, Edge, Brave)",
+"Clique sur l'icône d'installation à droite de la barre d'adresse.": "Bësal ikon bu installation bi ci ndijooru barre d'adresse bi.",
+"Comment installer, pas à pas": "Naka lañuy installer, pas ak pas",
 "Site officiel": "Site officiel",
 "Sauvegarde impossible : stockage du navigateur plein ou bloqué.": "Denc gi antuwul : barab bi ci navigateur bi fees na walla dañu ko tëj.",
 "{app} est activé. Bienvenue !": "{app} dox na. Dalal ak jàmm !",
