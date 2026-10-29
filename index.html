@@ -252,6 +252,7 @@ body.locked .app,body.locked .bottomnav{display:none}
 .steps{display:flex;flex-direction:column;gap:9px;font-size:14px}
 .step{display:flex;gap:10px;align-items:flex-start}
 .step .n{width:24px;height:24px;border-radius:50%;background:var(--primary-soft);color:var(--primary);display:grid;place-items:center;font-size:12px;font-weight:800;flex-shrink:0}
+.trial-box{background:var(--primary-soft);border:1.5px solid var(--primary);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px;text-align:center}
 .dev-box{background:var(--surface2);border:1px dashed var(--border);border-radius:14px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px}
 .dev-id{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:24px;font-weight:800;letter-spacing:.08em}
 .lock-foot{text-align:center;font-size:13px;color:var(--muted)}
@@ -700,16 +701,58 @@ async function checkSig(sig) {
 }
 function storeSig(c) { const lic = getLic(); lic.sig = c; lic.at = Date.now(); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} LIC_OK = true; }
 function unlockApp() { document.body.classList.remove('locked'); $('#lock').innerHTML = ''; buildNav(); render(); toast(t('{app} est activé. Bienvenue !', {app: APP})); }
+
+/* ---------- ESSAI GRATUIT 24 H ----------
+   • Bouton « Commencer l'essai gratuit » sur l'écran d'activation : 24 h d'accès
+     complet, une seule fois par appareil (début stocké avec la licence).
+   • « Tout effacer » ne remet pas l'essai à zéro.
+   • Horloge du téléphone reculée de plus de 10 min → essai considéré terminé.
+   • À la fin, l'appli se verrouille et demande un code ; les données sont conservées. */
+const TRIAL_MS = 24 * 3600 * 1000;
+let trialTimer = null;
+function trialInfo() {
+  const lic = getLic(), start = +lic.trial || 0;
+  if (!start) return {started: false, active: false, left: 0};
+  const now = Date.now(), seen = Math.max(+lic.seen || 0, start);
+  const left = now < seen - 10 * 60 * 1000 ? 0 : Math.max(0, start + TRIAL_MS - now);
+  return {started: true, active: left > 0, left};
+}
+function trialTouch() { const lic = getLic(); if (!lic.trial) return; lic.seen = Math.max(+lic.seen || 0, Date.now()); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} }
+const fmtLeft = ms => { const m = Math.max(1, Math.ceil(ms / 60000)), h = Math.floor(m / 60); return h ? `${h} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
+function trialBar() {
+  if (LIC_OK) return '';
+  const ti = trialInfo(); if (!ti.active) return '';
+  return `<div id="trialBar" class="alert alert-amber no-print" style="margin-bottom:14px;align-items:center"><span class="a-ic">🎁</span><span style="flex:1">${t('Essai gratuit : il reste <b>{d}</b>.', {d: fmtLeft(ti.left)})}</span><button class="btn btn-sm btn-primary" data-action="trial-buy">${t('Activer')}</button></div>`;
+}
+function trialTick() {
+  if (LIC_OK) { clearInterval(trialTimer); trialTimer = null; return; }
+  trialTouch();
+  if (!trialInfo().active) { clearInterval(trialTimer); trialTimer = null; closeModal(); renderLock(); window.scrollTo(0, 0); return; }
+  const bar = $('#trialBar'); if (bar) bar.outerHTML = trialBar();
+}
+function enterTrial(first) {
+  trialTouch();
+  document.body.classList.remove('locked'); $('#lock').innerHTML = ''; buildNav(); render();
+  if (!trialTimer) trialTimer = setInterval(trialTick, 30000);
+  if (first) toast(t('Essai gratuit activé : 24 h pour tout découvrir !'));
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && trialTimer) trialTick(); });
 const waLink = text => `https://wa.me/${CONTACT}?text=${encodeURIComponent(text)}`;
 
 function renderLock(err = '') {
-  const lic = getLic();
+  const lic = getLic(), ti = trialInfo();
   document.body.classList.add('locked');
+  const trialHtml = ti.active
+    ? `<div class="alert alert-amber"><span class="a-ic">🎁</span><span>${t('Essai gratuit en cours : il reste <b>{d}</b>.', {d: fmtLeft(ti.left)})}</span></div><button type="button" class="btn btn-block" data-action="trial-back">${t("← Continuer l'essai gratuit")}</button>`
+    : ti.started
+      ? `<div class="alert alert-amber"><span class="a-ic">⏳</span><span>${t('Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.', {app: APP})}</span></div>`
+      : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 24 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
   const msg = t('Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}', {app: APP, price: PRICE ? ' (' + PRICE + ')' : '', dev: lic.dev});
   $('#lock').innerHTML = `<div class="lock-wrap"><div class="lock-card ${err ? 'shake' : ''}">
     <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${icon('bolt', 20)}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
       <div class="lang-row">${Object.keys(LANGS).map(k => `<button class="chip ${lang() === k ? 'on' : ''}" data-action="lock-lang" data-id="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
     <div><h1 class="lock-title">${t('Activez votre application')}</h1><p class="sub mt-s">${t('{app} fonctionne avec un code d\'accès personnel, lié à cet appareil.', {app: APP})}</p></div>
+    ${trialHtml}
     <div class="steps">
       <div class="step"><span class="n">1</span><span>${t('Copiez votre <b>code appareil</b> ci-dessous.')}</span></div>
       <div class="step"><span class="n">2</span><span>${PRICE ? t('Envoyez-le sur WhatsApp et réglez <b>{price}</b> (paiement unique).', {price: PRICE}) : t('Envoyez-le sur WhatsApp pour recevoir votre code.')}</span></div>
@@ -952,6 +995,7 @@ function render() {
   if (document.body.classList.contains('locked')) return;
   const v = views[state.view] ? state.view : 'home';
   $('#view').innerHTML = views[v]();
+  if (!LIC_OK) $('#view').insertAdjacentHTML('afterbegin', trialBar());
   $$('[data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === v));
   if (after[v]) after[v]();
 }
@@ -1428,8 +1472,8 @@ views.reglages = () => {
   <div class="card"><h2>💾 ${t('Sauvegarde')}</h2><p class="sub mt-s">${s.lastBackup ? t('Dernière sauvegarde : {d}', {d: new Date(s.lastBackup).toLocaleDateString(LOCALE())}) : t('Aucune sauvegarde pour l\'instant.')}</p>
     <div class="flex wrap mt"><button class="btn btn-primary" data-action="export">⬇️ ${t('Exporter mes données')}</button><label class="btn" style="cursor:pointer">⬆️ ${t('Importer')}<input type="file" accept=".json,application/json" data-live="import" hidden></label></div>
     <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoyez-le-vous sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p></div>
-  <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span><span class="badge b-green">✓ ${t('Activée')}</span></div><div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
-    <div class="flex wrap mt"><button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div></div>
+  <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span>${LIC_OK ? `<span class="badge b-green">✓ ${t('Activée')}</span>` : `<span class="badge b-amber">🎁 ${t('Essai gratuit')}</span>`}</div>${LIC_OK ? '' : `<div class="kv"><span>${t('Temps restant')}</span><b>${fmtLeft(trialInfo().left)}</b></div>`}<div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${LIC_OK && lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
+    <div class="flex wrap mt">${LIC_OK ? '' : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div></div>
   <div class="card"><h2>📲 ${t("Installer l'application")}</h2><div class="mt-s">${TLI.html(APP, 'btn btn-primary')}</div><div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
     <h3 class="mt-l">⚠️ ${t('Zone sensible')}</h3><button class="btn btn-sm btn-danger mt-s" data-action="wipe">${t('Tout effacer')}</button><p class="hint mt-s">${t('« Tout effacer » conserve votre activation.')}</p></div>
   </div>
@@ -1649,6 +1693,9 @@ const actions = {
       else { const st = $('#scanS'); if (st) st.textContent = '❌ ' + t('Ce code ne correspond pas à cet appareil'); }
     });
   },
+  'trial-start': () => { const lic = getLic(); if (lic.trial) return renderLock(); lic.trial = lic.seen = Date.now(); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} enterTrial(true); },
+  'trial-back': () => { if (trialInfo().active) enterTrial(false); else renderLock(); },
+  'trial-buy': () => { closeModal(); renderLock(); window.scrollTo(0, 0); },
   'lock-lang': id => { D.settings.lang = id; save(); applyTheme(); renderLock(); },
   'lock-guide': () => openModal(t('Découvrir {app}', {app: APP}), `<p class="sub" style="margin-bottom:14px">${t('Comprendre et réduire sa consommation d\'électricité, 100 % hors ligne et privé. Voici le guide complet :')}</p>${guideHtml()}`),
   install: () => { if (installPrompt) { installPrompt.prompt(); installPrompt.userChoice.finally(() => { installPrompt = null; }); } else openModal(t('Installer {app}', {app: APP}), installHelp()); },
@@ -1893,7 +1940,7 @@ fr: [
 <li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
 <li>Vider les données du navigateur efface tout : gardez toujours une sauvegarde récente.</li></ul>`],
 ['📲 Installer l\'application', installHelp],
-['🔑 Activation et code d\'accès', `<p>Chaque téléphone a son <b>code appareil</b> (ex : PL-7KQ2-M9XA), visible sur l'écran d'activation et dans les Réglages. Envoie-le sur WhatsApp au ${CONTACT_FMT} pour recevoir votre code d'activation, à coller une seule fois. Vous pouvez aussi scanner le QR code du vendeur. Le code ne fonctionne que sur votre téléphone.</p>`],
+['🔑 Activation et code d\'accès', `<p>Chaque téléphone a son <b>code appareil</b> (ex : PL-7KQ2-M9XA), visible sur l'écran d'activation et dans les Réglages. Envoie-le sur WhatsApp au ${CONTACT_FMT} pour recevoir votre code d'activation, à coller une seule fois. Vous pouvez aussi scanner le QR code du vendeur. Le code ne fonctionne que sur votre téléphone.</p><p><b>Essai gratuit :</b> sur l'écran d'activation, touchez « Commencer l'essai gratuit » pour utiliser {app} pendant 24 h sans code (une seule fois par téléphone). À la fin, l'appli demande un code d'activation ; vos données sont conservées.</p>`.replace('{app}', APP)],
 ['❓ Questions fréquentes', `<ul><li><b>Les chiffres sont-ils officiels ?</b> La grille par défaut est celle publiée par la CRSE. Les consommations d'appareils sont des estimations ; vos relevés donnent la vérité.</li>
 <li><b>Faut-il Internet ?</b> Non. Une fois installée, l'appli fonctionne hors ligne.</li>
 <li><b>Mon solde a augmenté sans recharge ?</b> Une recharge a été oubliée ou un chiffre mal saisi : vérifiez l'historique.</li>
@@ -1920,7 +1967,7 @@ en: [
 ['💰 Editing the tariff grid', `<p>Defaults are the official Senelec tariffs (CRSE grids, 1 January 2026). If prices change, edit tiers, VAT, municipal tax, fixed fee and stamp in <b>Settings → Tariff grid</b>, or reset to official prices.</p>`],
 ['💾 Backup and new phone', `<p>Data stays on your phone. Export a backup file regularly. On a new phone: install, request a new activation code, then import your file.</p>`],
 ['📲 Install the app', installHelp],
-['🔑 Activation', `<p>Each phone has a <b>device code</b> (e.g. PL-7KQ2-M9XA). Send it on WhatsApp to ${CONTACT_FMT} to receive your activation code, or scan the seller's QR code.</p>`]
+['🔑 Activation', `<p>Each phone has a <b>device code</b> (e.g. PL-7KQ2-M9XA). Send it on WhatsApp to ${CONTACT_FMT} to receive your activation code, or scan the seller's QR code.</p><p><b>Free trial:</b> on the activation screen, tap "Start the free trial" to use the app for 24 hours without a code (once per phone). Afterwards an activation code is required; your data is kept.</p>`]
 ],
 wo: [
 ['🚀 Tàmbali ci 5 simili', `<ol><li><b>Tànnal sa kontöör</b> ci kaw (📍), def ko tur (Kër, Bitik…).</li>
@@ -1935,7 +1982,7 @@ wo: [
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
 ['📲 Installer appli bi', installHelp],
-['🔑 Activation', `<p>Telefon bu nekk am na <b>code appareil</b> (misaal PL-7KQ2-M9XA). Yónneel ko ci WhatsApp ci ${CONTACT_FMT} ngir jot sa code d'activation.</p>`],
+['🔑 Activation', `<p>Telefon bu nekk am na <b>code appareil</b> (misaal PL-7KQ2-M9XA). Yónneel ko ci WhatsApp ci ${CONTACT_FMT} ngir jot sa code d'activation.</p><p><b>Essai gratuit :</b> ci écran d'activation bi, bësal « Tàmbali essai gratuit bi » ngir jëfandikoo appli bi 24 waxtu te amul code (benn yoon rekk ci telefon bu nekk). Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.</p>`],
 ['ℹ️ Guide bu mat sëkk', `<p>Guide bu mat sëkk bi ci français ak ci anglais la nekk : soppil làkk wi ci Réglages ngir jàng ko.</p>`]
 ]
 };
@@ -2002,6 +2049,18 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Essai gratuit : il reste <b>{d}</b>.": "Free trial: <b>{d}</b> left.",
+"Essai gratuit en cours : il reste <b>{d}</b>.": "Free trial running: <b>{d}</b> left.",
+"← Continuer l'essai gratuit": "← Continue the free trial",
+"Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Your 24-hour free trial has ended. Your data is kept: activate {app} to get it back.",
+"Essayez gratuitement pendant 24 h": "Try it free for 24 hours",
+"Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.": "Full access, no payment, no commitment. After that, an activation code is required; your data is kept.",
+"Commencer l'essai gratuit": "Start the free trial",
+"Essai gratuit activé : 24 h pour tout découvrir !": "Free trial started: 24 hours to explore everything!",
+"Essai gratuit": "Free trial",
+"Temps restant": "Time left",
+"Activer maintenant": "Activate now",
+"Activer": "Activate",
 "Votre navigateur peut installer {app} comme une vraie application : icône propre (sans logo de navigateur), plein écran et ouverture hors ligne.": "Your browser can install {app} as a real app: clean icon (no browser logo), full screen and offline use.",
 "Installer {app}": "Install {app}",
 "Vous avez déjà une icône avec le petit logo du navigateur ? Après l'installation, faites une sauvegarde de vos données, puis supprimez l'ancienne icône.": "Already have an icon with the small browser logo? After installing, back up your data, then remove the old icon.",
@@ -2590,6 +2649,18 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Essai gratuit : il reste <b>{d}</b>.": "Essai gratuit : <b>{d}</b> moo des.",
+"Essai gratuit en cours : il reste <b>{d}</b>.": "Essai gratuit bi ngi dox : <b>{d}</b> moo des.",
+"← Continuer l'essai gratuit": "← Wéyal essai gratuit bi",
+"Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Sa essai gratuit bu 24 waxtu jeex na. Say done dañuy des : dooxal {app} ngir gis leen ci kanam.",
+"Essayez gratuitement pendant 24 h": "Jéemal ko 24 waxtu, te doo fey dara",
+"Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.": "Mën ngaa jëfandikoo lépp te doo fey dara. Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.",
+"Commencer l'essai gratuit": "Tàmbali essai gratuit bi",
+"Essai gratuit activé : 24 h pour tout découvrir !": "Essai gratuit bi tàmbali na : 24 waxtu ngir xam lépp !",
+"Essai gratuit": "Essai gratuit",
+"Temps restant": "Waxtu wi des",
+"Activer maintenant": "Dooxal ko léegi",
+"Activer": "Dooxal",
 "Votre navigateur peut installer {app} comme une vraie application : icône propre (sans logo de navigateur), plein écran et ouverture hors ligne.": "Sa navigateur mën na installer {app} niki appli bu wóor : ikon bu set (amul logo navigateur), ekraan bu mat te dox na te amul internet.",
 "Installer {app}": "Installer {app}",
 "Vous avez déjà une icône avec le petit logo du navigateur ? Après l'installation, faites une sauvegarde de vos données, puis supprimez l'ancienne icône.": "Am nga ba noppi ikon bu am logo navigateur bi ? Ginnaaw installation bi, def sauvegarde say done, te far ikon bu màggat bi.",
@@ -3188,7 +3259,8 @@ const I18N = {
   applyTheme();
   const l = getLic();
   if (l.sig) LIC_OK = await checkSig(l.sig);
-  if (!LIC_OK) { renderLock(); return; }
+  if (!LIC_OK && !trialInfo().active) { renderLock(); return; }
+  if (!LIC_OK) { enterTrial(false); return; }
   buildNav(); render();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
 })();
