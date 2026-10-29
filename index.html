@@ -326,6 +326,8 @@ const $$ = s => [...document.querySelectorAll(s)];
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num = v => { const n = parseFloat(String(v ?? '').replace(/[\s  ]/g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
+// Montants en francs : « 5.000 », « 10.000 », « 1.500.000 », « 5 000 F » = milliers ; les kWh gardent leurs décimales (num).
+const money = v => { const t = String(v ?? '').replace(/[\s\u202f\u00a0]/g, '').replace(/[^\d.,-]/g, ''); if (/^-?[1-9]\d{0,2}([.,]\d{3})+$/.test(t)) return num(t.replace(/[.,]/g, '')); const lc = t.lastIndexOf(','), ld = t.lastIndexOf('.'); return num(lc > -1 && ld > -1 ? (lc > ld ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '')) : t); };
 const sum = (arr, f) => arr.reduce((a, x) => a + (f ? f(x) : x), 0);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const r1 = n => Math.round(n * 10) / 10;
@@ -1215,7 +1217,7 @@ views.calcul = () => {
 };
 after.calcul = () => calcLive();
 window.calcLive = function () {
-  const P = profOf(), ym = curYM(), cum = boughtIn(ym), a = num($('#calcAmt') && $('#calcAmt').value), when = $('#calcWhen') ? $('#calcWhen').value : 'now', kw = num($('#calcKwh') && $('#calcKwh').value);
+  const P = profOf(), ym = curYM(), cum = boughtIn(ym), a = money($('#calcAmt') && $('#calcAmt').value), when = $('#calcWhen') ? $('#calcWhen').value : 'now', kw = num($('#calcKwh') && $('#calcKwh').value);
   state.calc = {amount: a, when, kwh: kw};
   const c0 = when === 'first' ? 0 : cum, first = when === 'first' ? true : isFirstOfMonth(ym);
   const r = kwhFor(P, c0, a, first), alt = when === 'first' ? kwhFor(P, cum, a, isFirstOfMonth(ym)) : kwhFor(P, 0, a, true);
@@ -1242,7 +1244,7 @@ views.verif = () => {
 };
 window.verifLive = function () {
   const f = $('#verifForm'); if (!f) return;
-  const P = profOf(), a = num(f.amount.value), k = num(f.kwh.value), cum = num(f.cum.value), first = f.first.checked;
+  const P = profOf(), a = money(f.amount.value), k = num(f.kwh.value), cum = num(f.cum.value), first = f.first.checked;
   if (!a || !k) { $('#verifOut').innerHTML = empty(t('Saisis le montant et les kWh reçus.')); return; }
   const exp = kwhFor(P, cum, a, first), d = k - exp.kwh, pct = d / Math.max(exp.kwh, .001) * 100;
   const verdict = Math.abs(pct) <= 3 ? alertBox('green', '✅', t('<b>Conforme</b> : la grille donne {e}, tu as reçu {k} (écart {p} %).', {e: K(exp.kwh, 2), k: K(k, 2), p: nf(pct, 1)}))
@@ -1450,7 +1452,7 @@ function rechargeForm(r = {}) {
   </form>`;
 }
 window.rechPreview = function (f) {
-  const P = profOf(), a = num(f.amount.value), ts = parseDT(f.date.value || nowLocal()), ym = ymOf(f.date.value || today()), id = f.id.value;
+  const P = profOf(), a = money(f.amount.value), ts = parseDT(f.date.value || nowLocal()), ym = ymOf(f.date.value || today()), id = f.id.value;
   const cum = boughtIn(ym, meter().id, ts, id), first = isFirstOfMonth(ym, meter().id, ts, id), exp = kwhFor(P, cum, a, first), k = num(f.kwh.value);
   let html = '';
   if (a > 0) {
@@ -1687,7 +1689,7 @@ const actions = {
   'del-measure': id => { D.measures = D.measures.filter(x => x.id !== id); save(); render(); },
   'sim-add': k => { const o = state.achat[k], r = refOf(o.type); D.appliances.push({id: uid(), meterId: meter().id, type: o.type, name: refName(o.type), qty: 1, brand: '', ref: '', size: '', watts: num(o.watts), hours: num(o.hours), duty: '', sb: ''}); save(); toast(t('{n} ajouté', {n: refName(o.type)})); },
   'del-person': id => { const m = meter(); m.people = m.people.filter(p => p.id !== id); D.appliances.forEach(a => { if (a.owner === id) a.owner = ''; }); save(); render(); },
-  'share-wa': total => { const txt = `⚡ ${t('Partage électricité')} — ${meter().name} (${monthName(state.shareYM)})\n${t('Total')} : ${F(num(total))}\n\n` + (state.shareRows || []).map(r => `• ${r.name} : ${F(r.f)} (${nf(r.pct)} %)`).join('\n') + `\n\n${t('Calculé avec {app}', {app: APP})}`; window.open('https://wa.me/?text=' + encodeURIComponent(txt), '_blank'); },
+  'share-wa': total => { const txt = `⚡ ${t('Partage électricité')} — ${meter().name} (${monthName(state.shareYM)})\n${t('Total')} : ${F(money(total))}\n\n` + (state.shareRows || []).map(r => `• ${r.name} : ${F(r.f)} (${nf(r.pct)} %)`).join('\n') + `\n\n${t('Calculé avec {app}', {app: APP})}`; window.open('https://wa.me/?text=' + encodeURIComponent(txt), '_blank'); },
   csv: () => {
     const rows = [[t('Type'), t('Compteur'), t('Date'), t('Montant (F)'), 'kWh', t('Solde avant (kWh)'), t('Solde (kWh)'), t('Note')]];
     D.recharges.forEach(r => rows.push([t('Recharge'), (D.meters.find(m => m.id === r.meterId) || {}).name, r.date.replace('T', ' '), r.amount, r.kwh, r.before, '', r.note || '']));
@@ -1721,14 +1723,14 @@ const forms = {
   },
   noop() {},
   recharge(f) {
-    const amount = num(f.amount); if (amount <= 0) return toast(t('Montant invalide.'), 'err');
+    const amount = money(f.amount); if (amount <= 0) return toast(t('Montant invalide.'), 'err');
     const unknown = f.unknown === 'on', before = unknown || f.before === '' ? '' : num(f.before);
     if (!unknown && f.before === '') return toast(t('Note le solde AVANT recharge, ou coche « Je n\'ai pas noté le solde avant ».'), 'warn');
     const ts = parseDT(f.date), ym = ymOf(f.date);
     let kwh = num(f.kwh);
     if (!kwh) kwh = r2(kwhFor(profOf(), boughtIn(ym, meter().id, ts, f.id), amount, isFirstOfMonth(ym, meter().id, ts, f.id)).kwh);
     const data = {amount, kwh, before, date: f.date, note: (f.note || '').trim(), meterId: meter().id};
-    if (f.id) Object.assign(D.recharges.find(r => r.id === f.id), data); else D.recharges.push({id: uid(), ...data});
+    if (f.id) Object.assign(D.recharges.find(r => r.id === f.id) || (D.recharges.push({id: f.id}), D.recharges[D.recharges.length - 1]), data); else D.recharges.push({id: uid(), ...data});
     save(); closeModal(); render();
     const v = verifyRecharge(f.id ? D.recharges.find(r => r.id === f.id) : D.recharges[D.recharges.length - 1]);
     toast(v.diffPct != null && v.diffPct < -3 ? t('Recharge enregistrée. ⚠️ {p} % de kWh en moins que la grille.', {p: nf(-v.diffPct, 1)}) : t('Recharge enregistrée ✓'), v.diffPct != null && v.diffPct < -3 ? 'warn' : '');
@@ -1736,19 +1738,19 @@ const forms = {
   reading(f) {
     if (f.solde === '') return toast(t('Saisis le solde.'), 'err');
     const data = {solde: num(f.solde), date: f.date, note: (f.note || '').trim(), meterId: meter().id};
-    if (f.id) Object.assign(D.readings.find(r => r.id === f.id), data); else D.readings.push({id: uid(), ...data});
+    if (f.id) Object.assign(D.readings.find(r => r.id === f.id) || (D.readings.push({id: f.id}), D.readings[D.readings.length - 1]), data); else D.readings.push({id: uid(), ...data});
     save(); closeModal(); render();
     const C = consumption(), lastIv = C.iv[C.iv.length - 1];
     toast(lastIv && lastIv.t2 === parseDT(f.date) ? t('Relevé enregistré : {k} consommés depuis le dernier point ({f}).', {k: K(lastIv.kwh), f: F(lastIv.kwh * curPrice())}) : t('Relevé enregistré ✓'));
   },
   app(f, el) {
     const a = appFromForm(el); if (!a.name) a.name = refName(a.type);
-    if (f.id) { const o = D.appliances.find(x => x.id === f.id); Object.assign(o, a); } else D.appliances.push({id: uid(), meterId: meter().id, ...a});
+    if (f.id) { const o = D.appliances.find(x => x.id === f.id); if (o) Object.assign(o, a); else D.appliances.push({id: f.id, meterId: meter().id, ...a}); } else D.appliances.push({id: uid(), meterId: meter().id, ...a});
     save(); closeModal(); render(); toast(t('Appareil enregistré ✓'));
   },
   meter(f) {
-    const data = {name: f.name.trim(), profile: f.profile, number: (f.number || '').trim(), budget: num(f.budget)};
-    if (f.id) Object.assign(D.meters.find(m => m.id === f.id), data);
+    const data = {name: f.name.trim(), profile: f.profile, number: (f.number || '').trim(), budget: money(f.budget)};
+    if (f.id) Object.assign(D.meters.find(m => m.id === f.id) || (D.meters.push({id: f.id, people: [], created: today()}), D.meters[D.meters.length - 1]), data);
     else { const m = {id: uid(), people: [], created: today(), ...data}; D.meters.push(m); D.settings.cur = m.id; }
     save(); closeModal(); render(); toast(t('Compteur enregistré ✓'));
   },
@@ -1765,9 +1767,9 @@ const forms = {
   pulse(f) { D.settings.pulse = Math.max(1, num(f.pulse) || 1600); save(); render(); toast(t('Enregistré ✓')); },
   drop(f) { const a = num(f.a), b = num(f.b), mn = num(f.min); if (!(a > b) || mn <= 0) return toast(t('Le solde de fin doit être plus petit que celui du début.'), 'err'); saveMeasure(f.key, (a - b) * 1000 * 60 / mn, 'drop'); },
   person(f) { const m = meter(); m.people.push({id: uid(), name: f.name.trim()}); save(); render(); },
-  'share-total'(f) { state.shareTotal = num(f.total); render(); },
+  'share-total'(f) { state.shareTotal = money(f.total); render(); },
   'verif-save'(f) {
-    const amount = num(f.amount), kwh = num(f.kwh); if (!amount || !kwh) return toast(t('Montant invalide.'), 'err');
+    const amount = money(f.amount), kwh = num(f.kwh); if (!amount || !kwh) return toast(t('Montant invalide.'), 'err');
     openModal('⚡ ' + t('Nouvelle recharge'), rechargeForm({amount, kwh, date: f.date}));
     rechPreview($('#modal-body form'));
   }
