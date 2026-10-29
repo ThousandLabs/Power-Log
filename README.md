@@ -8,6 +8,6 @@ Comprendre et réduire sa consommation d'électricité (compteurs prépayés Woy
 - **Contact** : WhatsApp 71 121 65 81
 - **Tarif** : 5 000 F, paiement unique — essai gratuit de 24 h (une fois par appareil)
 
-Fonctionnalités : moteur des tranches (grille Senelec officielle, modifiable), suivi des recharges et relevés, inventaire des appareils (saisie par texte), calculateur, vérificateur de ticket, mode détective, chasse à la veille, simulateur d'achat, plusieurs compteurs, partage de facture, rappels, guide et lexique, français / anglais / wolof.
+Fonctionnalités : moteur des tranches (grille Senelec officielle, modifiable), suivi des recharges et relevés, inventaire des appareils (saisie par texte ou 📷 scan de l'étiquette : la puissance est lue sur la photo), calculateur, vérificateur de ticket, mode détective, chasse à la veille, simulateur d'achat, plusieurs compteurs, partage de facture, rappels, guide et lexique, français / anglais / wolof.
 
 Activation par code lié à l'appareil (codes générés avec Thousand Admin). L'application ne contient que la clé publique.
