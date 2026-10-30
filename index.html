@@ -987,7 +987,7 @@ function parseLabel(raw) {
   const GOOD = /PUISSANCE|POWER|INPUT|ENTR[EÉ]E|RATED|NOMINAL|ABSORB|CONSOMM|CONSUMPTION|WATT/;
   const BAD = /CAPACIT|COOLING|REFROIDISS|FRIGORIF|DEFROST|D[EÉ]GIVR|LAMP|AMPOULE|OUTPUT|SORTIE|STANDBY|VEILLE|BTU|KWH/;
   const watts = [], amps = [], volts = [];
-  let model = '';
+  let model = '', brand = '';
   lines.forEach(l => {
     for (const m of l.matchAll(/(\d{1,5}(?:[.,]\d{1,3})?)\s*(?:[-~\/]\s*(\d{1,5}(?:[.,]\d{1,3})?)\s*)?(KW|W)(?![A-Z])/g)) {
       let w = Math.max(n(m[1]), m[2] ? n(m[2]) : 0);
@@ -1008,6 +1008,8 @@ function parseLabel(raw) {
       const a = +m[1], b = m[2] ? +m[2] : a;
       if (a >= 100 && b <= 260) volts.push([a, b]);
     }
+    if (!brand) { const mb = l.match(/(?:BRAND|MARQUE|TRADE\s*MARK)\s*[:.]?\s*([A-Z][A-Z0-9&+\- ]{1,20})/); if (mb) brand = mb[1].trim().split(/\s{2,}/)[0]; }
+    if (!brand) { const b = LABEL_BRANDS.find(b => new RegExp('(^|[^A-Z0-9])' + b.replace(/[+]/g, '\\+') + '(?![A-Z0-9])').test(l)); if (b) brand = b; }
     if (!model) { const mm = l.match(/MOD[EÈÉ]LE?\s*(?:NO\.?|N[°O]\.?)?\s*[:.]?\s*([A-Z0-9][A-Z0-9\-\/.]{3,24})/); if (mm) model = mm[1].replace(/[.\-\/]+$/, ''); }
   });
   // Réseau sénégalais : 220 V, sauf si l'étiquette indique une autre tension
@@ -1024,8 +1026,43 @@ function parseLabel(raw) {
   const push = w => { if (!(best && near(w, best.w)) && !alts.some(x => near(x, w))) alts.push(w); };
   uniq.filter(x => x.score > -3).forEach(x => push(x.w));
   if (best && best.how === 'w' && amps.length) push(Math.round(amps[0].a * volt));
-  return {best, alts: alts.slice(0, 4), model, volt};
+  return {best, alts: alts.slice(0, 4), model, brand: brand ? niceBrand(brand) : '', volt};
 }
+
+// Marques reconnues sur une étiquette (on écarte les mots trompeurs : « HP » = cheval, « CFC FREE »…)
+const LABEL_BRANDS = ['SAMSUNG', 'LG', 'HISENSE', 'TCL', 'SONY', 'NASCO', 'ASTECH', 'ROCH', 'MIDEA', 'GREE', 'HAIER', 'BEKO', 'WESTPOINT', 'SHARP', 'PANASONIC', 'PHILIPS', 'CARRIER', 'DAIKIN', 'HITACHI', 'TOSHIBA', 'WHIRLPOOL', 'BOSCH', 'KENWOOD', 'BINATONE', 'TEFAL', 'MOULINEX', 'DELL', 'LENOVO', 'XIAOMI', 'ITEL', 'TECNO', 'INFINIX', 'HUAWEI', 'CONDOR', 'INNOVA', 'SMART TECHNOLOGY', 'SMARTECH', 'SINOTEC', 'AKIRA', 'SKYWORTH', 'VITRON', 'SAACHI', 'SOKANY', 'MITSUBISHI', 'FUJITSU', 'ELECTROLUX', 'BRANDT', 'ARCELIK', 'STARSAT', 'DEFY', 'CHIGO', 'AUX', 'TEKA', 'SAISHO', 'BRUHM', 'SCANFROST', 'POLYSTAR', 'THERMOCOOL', 'ENIEM', 'SABA', 'THOMSON', 'FIRST AUSTRIA', 'SAYONA', 'SILVER CREST', 'SILVERCREST'];
+const niceBrand = b => { b = String(b).trim(); return b.length <= 3 ? b.toUpperCase() : b.toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase()); };
+
+/* Mémoire des modèles : un modèle déjà enregistré dans l'appli → même puissance, sans rescanner */
+const modelKey = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function knownModel(ref, exceptId) {
+  const k = modelKey(ref); if (k.length < 4) return null;
+  const list = D.appliances.filter(a => a.id !== exceptId && modelKey(a.ref) === k && num(a.watts) > 0);
+  return list.find(a => a.measured) || list[list.length - 1] || null;
+}
+function modelRecall(f) {
+  const m = knownModel(f.ref.value, f.id.value); if (!m) return null;
+  if (f.type.value !== m.type) {
+    // Même modèle mais autre type choisi : on reprend le type (et ses réglages) de l'appareil connu
+    const k = Object.fromEntries(new FormData(f));
+    $('#modal-body').innerHTML = appForm({id: k.id, type: m.type, qty: k.qty, brand: k.brand.trim() || m.brand || '', ref: k.ref, size: m.size, watts: num(m.watts), hours: m.hours, duty: m.duty, sb: m.sb});
+    appPreview($('#modal-body form'));
+    toast(t('Modèle déjà connu : {w} (comme « {n} »)', {w: W(num(m.watts)), n: appName(m)}));
+    return m;
+  }
+  if (!f.brand.value.trim() && m.brand) f.brand.value = m.brand;
+  if (num(f.watts.value) !== num(m.watts)) { setScanWatts(num(m.watts)); toast(t('Modèle déjà connu : {w} (comme « {n} »)', {w: W(num(m.watts)), n: appName(m)})); }
+  return m;
+}
+// Recherche internet facultative (quand l'étiquette n'indique pas la puissance)
+function modelSearch() {
+  const f = $('#modal-body form[data-form="app"]'); if (!f) return;
+  const ref = f.ref.value.trim(); if (!ref) { toast(t('Écrivez d\'abord le modèle (ou scannez l\'étiquette).'), 'warn'); f.ref.focus(); return; }
+  if (navigator.onLine === false) { toast(t('Connexion internet nécessaire pour cette recherche.'), 'warn'); return; }
+  const q = [f.brand.value.trim(), ref, t('puissance watts')].filter(Boolean).join(' ');
+  window.open('https://www.google.com/search?q=' + encodeURIComponent(q), '_blank', 'noopener');
+}
+const searchBtn = () => `<button type="button" class="link-btn mt-s" data-action="model-search">🔎 ${t('Chercher ce modèle sur internet')}</button>`;
 
 // Bouton « Scanner l'étiquette » du formulaire appareil
 async function scanLabel(file) {
@@ -1038,7 +1075,7 @@ async function scanLabel(file) {
     if (m.status === 'recognizing text') status('🔎 ' + t('Lecture de l\'étiquette… {p} %', {p: Math.round((m.progress || 0) * 100)}));
     else if (/load/.test(m.status || '')) status('⏳ ' + t('Préparation du lecteur…') + (m.progress ? ' ' + Math.round(m.progress * 100) + ' %' : '') + `<br><small>${t('La 1re fois, il se télécharge (≈ 5 Mo, connexion nécessaire). Ensuite il marche hors ligne.')}</small>`);
   };
-  let res = null, text = '';
+  let res = null, text = '', last = null;
   try {
     const w = await getOCR();
     // Photo prise de travers ? On réessaie en la tournant.
@@ -1046,6 +1083,7 @@ async function scanLabel(file) {
       const {data} = await w.recognize(await labelCanvas(file, rot));
       const r = parseLabel(data.text);
       if (!text || r.best) text = data.text;
+      if (!last || r.model || r.best) last = r;
       if (r.best) { res = r; break; }
     }
   } catch (e) {
@@ -1059,16 +1097,23 @@ async function scanLabel(file) {
   if (!box.isConnected) return;
   const raw = text.trim() ? `<details class="mt-s"><summary class="link-btn" style="cursor:pointer">${t('Voir le texte lu')}</summary><pre class="scan-raw">${esc(text.trim())}</pre></details>` : '';
   if (!res) {
+    // Pas de puissance lue : on garde le modèle / la marque, et on regarde si le modèle est déjà connu
+    if (last && last.model && !f.ref.value.trim()) f.ref.value = last.model.slice(0, 40);
+    if (last && last.brand && !f.brand.value.trim()) f.brand.value = last.brand.slice(0, 30);
+    const mem = f.ref.value.trim() ? modelRecall(f) : null;
+    if (mem) { const b2 = $('#scanRes'); if (b2) b2.innerHTML = alertBox('green', '✅', `<b>${t('Modèle déjà connu : {w} (comme « {n} »)', {w: W(num(mem.watts)), n: esc(appName(mem))})}</b><br><small>${t('La puissance n\'a pas été lue sur la photo : elle est reprise de cet appareil.')}</small><br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${raw}`); return; }
+    if (f.ref.value.trim()) { box.innerHTML = alertBox('amber', '🤔', `<b>${t('Puissance introuvable sur la photo.')}</b><br>${t('Modèle lu : {m}. Réessayez de plus près, ou cherchez sa puissance sur internet.', {m: esc(f.ref.value.trim())})}<br>${searchBtn()}` + raw); return; }
     box.innerHTML = alertBox('amber', '🤔', `<b>${t('Puissance introuvable sur la photo.')}</b><br>${t('Conseils : bonne lumière (pas de flash direct), étiquette nette et bien droite, photo prise de près. Cherchez « W », « kW » ou « A ».')}` + raw);
     return;
   }
   setScanWatts(res.best.w);
   if (res.model && !f.ref.value.trim()) f.ref.value = res.model.slice(0, 40);
+  const brandSet = res.brand && !f.brand.value.trim(); if (brandSet) f.brand.value = res.brand.slice(0, 30);
   const how = res.best.how === 'a'
     ? t('Calculée : {a} A × {v} V. C\'est un maximum : la consommation réelle est souvent un peu plus basse.', {a: nf(res.best.a, 2), v: res.best.v})
     : t('Lu : « {l} »', {l: esc(res.best.line.slice(0, 60))});
   const alts = res.alts.length ? `<div class="mt-s"><small class="muted">${t('Autres valeurs lues :')}</small><div class="chips mt-s">${res.alts.map(w => `<button type="button" class="chip" data-action="scan-pick" data-id="${w}">${W(w)}</button>`).join('')}</div></div>` : '';
-  box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${alts}${raw}`);
+  box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}${brandSet ? `<br><small>${t('Marque : {b}', {b: esc(res.brand)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${alts}${raw}`);
 }
 /* Caméra intégrée : on vise l'étiquette dans le cadre, on capture, la lecture démarre.
    Repli automatique sur l'appareil photo / la galerie si la caméra est indisponible. */
@@ -1750,6 +1795,7 @@ function appForm(a = {}) {
     ${field(t('Type d\'appareil'), sel('type', REF.map(x => [x.k, x.e + ' ' + refName(x.k)]), type))}
     <div class="row2">${field(t('Nom'), inp('name', a.name || refName(type), 'maxlength="40"'))}${field(t('Quantité'), numInp('qty', a.qty || 1))}</div>
     <div class="row2">${field(t('Marque'), inp('brand', a.brand || '', 'maxlength="30" placeholder="Samsung, LG…"'))}${field(t('Référence / modèle'), inp('ref', a.ref || '', 'maxlength="40" placeholder="ex : UA43T5300"'))}</div>
+    <p class="hint" style="margin-top:-4px">${t('Un modèle déjà enregistré reprend sa puissance tout seul.')} ${searchBtn()}</p>
     ${r.size ? field(sizeLbl, numInp('size', a.size || '', 'placeholder="—"'), t('Remplit la puissance automatiquement.')) : '<input type="hidden" name="size" value="">'}
     <div class="scan-box"><button type="button" class="btn btn-block" id="scanBtn" data-action="scan-label">📷 ${t('Scanner l\'étiquette')}</button><input type="file" id="labelFile" accept="image/*" data-action="label-file" hidden><p class="hint mt-s">${t('Photographiez l\'étiquette (derrière ou dessous l\'appareil) : la puissance se remplit toute seule.')}</p><div id="scanRes"></div></div>
     <div class="row2">${field(t('Puissance (W)'), numInp('watts', a.watts ?? r.w), t('Sur l\'étiquette : « W » ou « Puissance »'))}${field(t('Heures d\'utilisation / jour'), numInp('hours', a.hours ?? r.h))}</div>
@@ -1771,6 +1817,7 @@ window.appPreview = function (f) {
 };
 window.appTypeChange = function (e, f) {
   if (e.target.name === 'type') { const r = refOf(f.type.value), keep = Object.fromEntries(new FormData(f)); const id = keep.id; const html = appForm({id, type: r.k, qty: keep.qty, brand: keep.brand, ref: keep.ref}); $('#modal-body').innerHTML = html; appPreview($('#modal-body form')); }
+  else if (e.target.name === 'ref') setTimeout(() => { const g = $('#modal-body form[data-form="app"]'); if (g) modelRecall(g); }, 0);
   else if (e.target.name === 'size') { f.watts.value = sizedWatts(f.type.value, f.size.value); appPreview(f); }
 };
 
@@ -1941,6 +1988,7 @@ const actions = {
   'app-sort': id => { state.appSort = id; render(); },
   'scan-label': () => camOpen(),
   'cam-shot': () => camShot(),
+  'model-search': () => modelSearch(),
   'cam-close': () => camClose(),
   'cam-torch': () => camTorchToggle(),
   'cam-file': () => { camClose(); pickLabelFile(); },
@@ -2141,6 +2189,7 @@ fr: [
 <ul><li>Elle cherche « W » ou « kW » (ex. <code>1500W</code>, <code>2,2kW</code>). Pour une clim, elle prend la <b>puissance absorbée</b> et ignore la capacité frigorifique.</li>
 <li>S'il n'y a que des ampères, elle calcule <b>W = 220 V × A</b> : c'est un maximum, la vraie consommation est souvent un peu plus basse.</li>
 <li>Pour une bonne lecture : bonne lumière, pas de flash direct, photo nette, de près et bien droite.</li>
+<li>Le scan lit aussi la <b>marque</b> et le <b>modèle</b>. Un modèle déjà enregistré dans l'appli reprend tout seul sa puissance (pratique pour 2 clims identiques). Si la puissance reste introuvable, touchez <b>🔎 Chercher ce modèle sur internet</b>.</li>
 <li>La 1re fois, le lecteur se télécharge (≈ 5 Mo, internet nécessaire), puis il marche hors ligne. La photo reste sur votre téléphone.</li>
 <li>Vérifiez toujours la valeur avant d'enregistrer, et corrigez-la si besoin.</li></ul>`],
 ['📝 Décrire ses appareils en texte', `<p>Dans « Mes appareils », touchez <b>📝 Décrire en texte</b> et écrivez naturellement, en français, en anglais ou avec des mots wolof courants :</p>
@@ -2186,7 +2235,7 @@ en: [
 ['✍️ Recording balances and top-ups', `<ul><li>The <b>balance</b> is the kWh left shown on the meter.</li><li>Before each top-up, note the balance <b>BEFORE</b> typing the 20-digit token: that is how the app knows exactly what you used.</li><li>Started mid-month? Enter kWh already bought this month in <b>Tiers & tariffs</b>.</li><li>Best: one reading at a fixed time (morning). Evening + morning readings reveal night consumption.</li></ul>`],
 ['📈 How consumption is calculated', `<p>Between two points, consumption = <b>balance after the first point − balance before the second</b>. It is spread day by day; unusual days are shown in red. Estimated balance = last known balance − average use × time elapsed. Days left = estimated balance ÷ daily average.</p>`],
 ['🔌 Appliances', `<ul><li><b>Power (W)</b> is on the label. For AC look for "Input power".</li><li>Unknown? The <b>reference table</b> gives a typical value; size (HP, inches, litres) adjusts it.</li><li><b>Hours per day</b> matter most.</li><li><b>Advanced</b>: duty cycle (fridge ≈ 40 %, AC ≈ 80 %, inverter ≈ 45 %) and standby power.</li></ul>`],
-['📷 Scan an appliance label', `<p>In an appliance form, tap <b>📷 Scan the label</b>: the camera opens inside the app. Fit the rating plate (usually on the back or underneath) in the frame and tap the white button. You can also turn on the light 🔦 or pick a photo from the gallery 🖼️. The app reads the power and fills in "Power (W)".</p><ul><li>It looks for "W" or "kW". For AC it takes the <b>input power</b>, not the cooling capacity.</li><li>Amps only? It computes <b>W = 220 V × A</b>, a maximum.</li><li>Good light, no direct flash, sharp close-up photo.</li><li>First time: downloads the reader (≈ 5 MB, internet needed), then works offline. The photo stays on your phone.</li><li>Always check the value before saving.</li></ul>`],
+['📷 Scan an appliance label', `<p>In an appliance form, tap <b>📷 Scan the label</b>: the camera opens inside the app. Fit the rating plate (usually on the back or underneath) in the frame and tap the white button. You can also turn on the light 🔦 or pick a photo from the gallery 🖼️. The app reads the power and fills in "Power (W)".</p><ul><li>It looks for "W" or "kW". For AC it takes the <b>input power</b>, not the cooling capacity.</li><li>Amps only? It computes <b>W = 220 V × A</b>, a maximum.</li><li>Good light, no direct flash, sharp close-up photo.</li><li>The scan also reads the <b>brand</b> and <b>model</b>. A model already saved in the app gets its power back automatically (handy for 2 identical ACs). If the power still can't be found, tap <b>🔎 Search this model online</b>.</li><li>First time: downloads the reader (≈ 5 MB, internet needed), then works offline. The photo stays on your phone.</li><li>Always check the value before saving.</li></ul>`],
 ['📝 Describe appliances in text', `<p>Write naturally: <code>2 Samsung TVs 43 inches 5h, 1 LG AC 1.5 HP inverter 8h, 3 fans 10h</code>. Precise format: <code>Qty | Type | Brand | Model | W | hours/day</code>. The "🤖 AI" button copies a ready prompt for Claude or Gemini.</p>`],
 ['🧮 Calculator and receipt checker', `<p><b>Calculator</b>: amount → kWh now vs on the 1st, or kWh → amount, plus the maximum to stay in your tier. <b>Checker</b>: enter amount paid and kWh received; the app compares with the official grid, explains where the money went and can calibrate your grid from a detailed receipt.</p>`],
 ['🕵️ Detective mode', `<ol><li>Find the meter's LED (marked "imp/kWh", usually 1000 or 1600) and set it in Settings.</li><li>Switch everything off and measure the <b>base</b> by tapping at each blink for 30 s. It should be below 15 W.</li><li>Switch on <b>one</b> appliance and measure it.</li><li>Much higher than expected = suspect appliance. Tap "Apply" to update the inventory.</li></ol>`],
@@ -2209,7 +2258,7 @@ wo: [
 <ul><li><b>Tranche 1</b> (0 ba 150 kWh ci weer wi) : njëg li gën a yomb.</li><li><b>Tranche 2</b> (lu ëpp 150 kWh) : kWh bi dafa gën a jafe.</li><li>Lu ëpp 250 kWh ci weer wi, <b>TVA 18 %</b> dina ci yokku.</li></ul>
 <div class="alert alert-amber"><span class="a-ic">⚠️</span><span>KWh yi nga <b>jënd</b> ñoo am solo, du yi nga jëfandikoo. Recharge bu mag ci 28 bi dina la jafe : ci 1 bi, xaalis bi dina la may kWh yu ëpp.</span></div>`],
 ['🤔 Lu tax may lekk 15 kWh ci bés ?', `<ol><li><b>Tàng gi</b> : klim ak ventilatoor yi dañuy gën a dox.</li><li><b>Frigo bu sonn</b> te du taxaw.</li><li><b>Jumtukaay bu bees</b>.</li><li><b>Tranche yi</b> : soo gën a jënd ci weer wi, kWh bi dina gën a jafe.</li><li><b>Jafe-jafe ci kuraŋ bi</b> : fil bu yàqu, dëkkandoo bu la song, kontöör bu yàqu.</li></ol><p>Jëfandikool <b>Mode détective</b>.</p>`],
-['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
+['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Scanner bi dina jàng itam <b>marque</b> ak <b>modèle</b>. Modèle bu ñu dencoon ci appli bi dina jël puissance bi moom kepp. Su puissance bi feeñul, bësal <b>🔎 Seet modèle bii ci internet</b>.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
 ['📲 Installer appli bi', installHelp],
@@ -2280,6 +2329,15 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Modèle déjà connu : {w} (comme « {n} »)": "Known model: {w} (same as \"{n}\")",
+"Écrivez d'abord le modèle (ou scannez l'étiquette).": "Type the model first (or scan the label).",
+"Connexion internet nécessaire pour cette recherche.": "Internet connection needed for this search.",
+"puissance watts": "power watts",
+"Chercher ce modèle sur internet": "Search this model online",
+"La puissance n'a pas été lue sur la photo : elle est reprise de cet appareil.": "The power couldn't be read on the photo: it's taken from that appliance.",
+"Modèle lu : {m}. Réessayez de plus près, ou cherchez sa puissance sur internet.": "Model read: {m}. Try again closer, or look up its power online.",
+"Marque : {b}": "Brand: {b}",
+"Un modèle déjà enregistré reprend sa puissance tout seul.": "A model you've already saved gets its power filled in automatically.",
 "Galerie": "Gallery",
 "Capturer": "Capture",
 "Caméra indisponible : choisissez une photo.": "Camera unavailable: choose a photo.",
@@ -2901,6 +2959,15 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Modèle déjà connu : {w} (comme « {n} »)": "Modèle bii xamees na ko : {w} (niki « {n} »)",
+"Écrivez d'abord le modèle (ou scannez l'étiquette).": "Bindal modèle bi jëkk (walla scanner étiquette bi).",
+"Connexion internet nécessaire pour cette recherche.": "Internet war na am ngir seet lii.",
+"puissance watts": "puissance watts",
+"Chercher ce modèle sur internet": "Seet modèle bii ci internet",
+"La puissance n'a pas été lue sur la photo : elle est reprise de cet appareil.": "Puissance bi jàngul ci foto bi : ñu jël ko ci jumtukaay boobu.",
+"Modèle lu : {m}. Réessayez de plus près, ou cherchez sa puissance sur internet.": "Modèle bi ñu jàng : {m}. Jéemaatal ci jege, walla seet puissance bi ci internet.",
+"Marque : {b}": "Marque : {b}",
+"Un modèle déjà enregistré reprend sa puissance tout seul.": "Modèle bu ñu dencoon dina jël puissance bi moom kepp.",
 "Galerie": "Galerie",
 "Capturer": "Foto",
 "Caméra indisponible : choisissez une photo.": "Caméra bi manul dox : tànnal benn foto.",
