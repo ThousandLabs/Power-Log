@@ -990,17 +990,17 @@ function parseLabel(raw) {
   let model = '', brand = '';
   lines.forEach((l, li) => {
     if (!model && /^\W*MOD[EÈÉ]LE?\s*(?:NO\.?|N[°O]\.?)?\s*[:.]?\s*$/.test(l) && lines[li + 1]) { const mm = lines[li + 1].trim().match(/^([A-Z0-9][A-Z0-9\-\/.]{3,24})/); if (mm && /\d/.test(mm[1])) model = mm[1].replace(/[.\-\/]+$/, ''); }
-    for (const m of l.matchAll(/(\d{1,5}(?:[.,]\d{1,3})?)\s*(?:[-~\/]\s*(\d{1,5}(?:[.,]\d{1,3})?)\s*)?(KW|W)(?![A-Z])/g)) {
+    for (const m of l.matchAll(/(?<![A-Z0-9.,])(\d{1,5}(?:[.,]\d{1,3})?)\s*(?:[-~\/]\s*(\d{1,5}(?:[.,]\d{1,3})?)\s*)?(KW|W)(?![A-Z])/g)) {
       let w = Math.max(n(m[1]), m[2] ? n(m[2]) : 0);
       if (m[3] === 'KW') w *= 1000;
       if (!(w >= 1 && w <= 12000) || /^\s*H/.test(l.slice(m.index + m[0].length))) continue;
       watts.push({w: Math.round(w), score: (GOOD.test(l) ? 2 : 0) - (BAD.test(l) ? 3 : 0), line: l.trim()});
     }
-    for (const m of l.matchAll(/(\d{1,2}(?:[.,]\d{1,2})?)\s*(HP|CV|CH)(?![A-Z])/g)) {
+    for (const m of l.matchAll(/(?<![A-Z0-9.,])(\d{1,2}(?:[.,]\d{1,2})?)\s*(HP|CV|CH)(?![A-Z])/g)) {
       const w = Math.round(n(m[1]) * 736);
       if (w >= 50 && w <= 12000 && !/BTU|CAPACIT/.test(l)) watts.push({w, score: -1, line: l.trim()});
     }
-    for (const m of l.matchAll(/(\d{1,3}(?:[.,]\d{1,2})?)\s*(MA|A)(?![A-Z])/g)) {
+    for (const m of l.matchAll(/(?<![A-Z0-9.,])(\d{1,3}(?:[.,]\d{1,2})?)\s*(MA|A)(?![A-Z])/g)) {
       let a = n(m[1]); if (m[2] === 'MA') a /= 1000;
       if (!(a > 0 && a <= 60)) continue;
       { const pre = l.slice(0, m.index), o = Math.max(pre.lastIndexOf('OUTPUT'), pre.lastIndexOf('SORTIE')), i = Math.max(pre.lastIndexOf('INPUT'), pre.lastIndexOf('ENTR'));
