@@ -297,6 +297,21 @@ body.locked .app,body.locked .bottomnav{display:none}
 .scanbox{position:relative;border-radius:18px;overflow:hidden;background:#000;aspect-ratio:1/1;max-width:360px;margin:12px auto}
 .scanbox video{width:100%;height:100%;object-fit:cover;display:block}
 .scanbox i{position:absolute;inset:14%;border:3px solid rgba(255,255,255,.9);border-radius:18px;box-shadow:0 0 0 999px rgba(0,0,0,.35)}
+/* Caméra intégrée pour l'étiquette (plein écran, au-dessus du formulaire) */
+.cam{position:fixed;inset:0;z-index:70;background:#000;display:none;flex-direction:column;color:#fff}
+.cam.open{display:flex}
+.cam-view{position:relative;flex:1;overflow:hidden}
+.cam-view video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cam-frame{position:absolute;left:7%;right:7%;top:50%;transform:translateY(-50%);aspect-ratio:4/3;max-height:70%;border:3px solid rgba(255,255,255,.95);border-radius:16px;box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
+.cam-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:calc(10px + env(safe-area-inset-top)) 12px 10px;z-index:2}
+.cam-hint{position:absolute;left:12px;right:12px;bottom:12px;text-align:center;font-size:14px;text-shadow:0 1px 3px #000;z-index:2}
+.cam-btn{background:rgba(0,0,0,.45);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:9px 14px;font-size:15px;cursor:pointer}
+.cam-btn.on{background:#facc15;color:#000;border-color:#facc15}
+.cam-bar{display:flex;align-items:center;justify-content:space-around;gap:10px;padding:16px 12px calc(18px + env(safe-area-inset-bottom));background:#000}
+.cam-shot{width:74px;height:74px;border-radius:50%;border:5px solid #fff;background:#fff;box-shadow:inset 0 0 0 3px #000;cursor:pointer;flex:none}
+.cam-shot:active{transform:scale(.94)}
+.cam-shot:disabled{opacity:.4}
+.cam-side{width:110px;display:flex;justify-content:center}
 
 @media print{.sidebar,.bottomnav,.no-print,.toasts,.modal{display:none!important}body{background:#fff;color:#000}.card{box-shadow:none;break-inside:avoid}}
 </style>
@@ -324,6 +339,12 @@ body.locked .app,body.locked .bottomnav{display:none}
   </div>
 </div>
 <div class="toasts" id="toasts"></div>
+<div class="cam" id="cam" role="dialog" aria-modal="true">
+  <div class="cam-view"><video id="camV" playsinline muted></video><div class="cam-frame" id="camF"></div>
+    <div class="cam-top"><button type="button" class="cam-btn" data-action="cam-close" id="camX">✕</button><button type="button" class="cam-btn" data-action="cam-torch" id="camT" hidden>🔦</button></div>
+    <div class="cam-hint" id="camH"></div></div>
+  <div class="cam-bar"><div class="cam-side"><button type="button" class="cam-btn" data-action="cam-file" id="camG">🖼️</button></div><button type="button" class="cam-shot" data-action="cam-shot" id="camS" aria-label="Capturer"></button><div class="cam-side"></div></div>
+</div>
 <script>
 'use strict';
 /* =========================================================================
@@ -1049,6 +1070,50 @@ async function scanLabel(file) {
   const alts = res.alts.length ? `<div class="mt-s"><small class="muted">${t('Autres valeurs lues :')}</small><div class="chips mt-s">${res.alts.map(w => `<button type="button" class="chip" data-action="scan-pick" data-id="${w}">${W(w)}</button>`).join('')}</div></div>` : '';
   box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${alts}${raw}`);
 }
+/* Caméra intégrée : on vise l'étiquette dans le cadre, on capture, la lecture démarre.
+   Repli automatique sur l'appareil photo / la galerie si la caméra est indisponible. */
+let camStream = null, camTorch = false;
+function pickLabelFile() { const i = $('#labelFile'); if (i) { i.value = ''; i.click(); } }
+async function camOpen() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.isSecureContext) return pickLabelFile();
+  const cam = $('#cam'), v = $('#camV'), hint = $('#camH'), shot = $('#camS');
+  $('#camX').setAttribute('aria-label', t('Fermer')); $('#camG').textContent = '🖼️ ' + t('Galerie'); shot.setAttribute('aria-label', t('Capturer'));
+  $('#camT').hidden = true; $('#camT').classList.remove('on'); camTorch = false; shot.disabled = true;
+  hint.textContent = t('Ouverture de la caméra…'); cam.classList.add('open');
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({audio: false, video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}});
+  } catch (e) {
+    camStop(); hint.textContent = '📵 ' + t('Caméra indisponible : choisissez une photo.'); return;
+  }
+  if (!cam.classList.contains('open')) { camStop(); return; }
+  v.srcObject = camStream; try { await v.play(); } catch (e) {}
+  const tr0 = camStream.getVideoTracks()[0];
+  try { const c = tr0.getCapabilities ? tr0.getCapabilities() : {}; if (c.torch) $('#camT').hidden = false;
+    if (c.focusMode && c.focusMode.includes('continuous')) tr0.applyConstraints({advanced: [{focusMode: 'continuous'}]}).catch(() => {}); } catch (e) {}
+  hint.textContent = t('Placez l\'étiquette dans le cadre, bien nette, puis touchez le bouton blanc.');
+  shot.disabled = false;
+}
+function camStop() { if (camStream) { camStream.getTracks().forEach(x => x.stop()); camStream = null; } const v = $('#camV'); if (v) v.srcObject = null; }
+function camClose() { camStop(); const c = $('#cam'); if (c) c.classList.remove('open'); }
+async function camTorchToggle() {
+  if (!camStream) return; const tr0 = camStream.getVideoTracks()[0];
+  try { await tr0.applyConstraints({advanced: [{torch: !camTorch}]}); camTorch = !camTorch; $('#camT').classList.toggle('on', camTorch); } catch (e) { $('#camT').hidden = true; }
+}
+// Capture : on garde la zone du cadre (+ une petite marge) en pleine résolution
+function camShot() {
+  const v = $('#camV'), W0 = v.videoWidth, H0 = v.videoHeight; if (!camStream || !W0) return;
+  const vr = v.getBoundingClientRect(), fr = $('#camF').getBoundingClientRect();
+  const k = Math.max(vr.width / W0, vr.height / H0), ox = (vr.width - W0 * k) / 2, oy = (vr.height - H0 * k) / 2, m = 0.08;
+  let x = (fr.left - vr.left - ox) / k, y = (fr.top - vr.top - oy) / k, w = fr.width / k, h = fr.height / k;
+  x -= w * m; y -= h * m; w *= 1 + 2 * m; h *= 1 + 2 * m;
+  x = Math.max(0, x); y = Math.max(0, y); w = Math.min(W0 - x, w); h = Math.min(H0 - y, h);
+  const c = document.createElement('canvas'); c.width = Math.round(w); c.height = Math.round(h);
+  c.getContext('2d').drawImage(v, x, y, w, h, 0, 0, c.width, c.height);
+  $('#camS').disabled = true;
+  c.toBlob(b => { camClose(); if (b) scanLabel(b); }, 'image/jpeg', 0.92);
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && $('#cam') && $('#cam').classList.contains('open')) camClose(); });
+
 function setScanWatts(w) {
   const f = $('#modal-body form[data-form="app"]'); if (!f) return;
   f.watts.value = w; f.watts.classList.remove('flash'); void f.watts.offsetWidth; f.watts.classList.add('flash');
@@ -1098,7 +1163,7 @@ function openModal(title, html, after) {
   const f = $('#modal-body input:not([type=hidden]):not([type=checkbox]):not([type=datetime-local])');
   if (f && window.matchMedia('(pointer:fine)').matches) setTimeout(() => f.focus(), 60);
 }
-function closeModal() { stopScan(); stopTap(); $('#modal').classList.remove('open'); $('#modal-body').innerHTML = ''; document.body.style.overflow = ''; }
+function closeModal() { camClose(); stopScan(); stopTap(); $('#modal').classList.remove('open'); $('#modal-body').innerHTML = ''; document.body.style.overflow = ''; }
 
 /* --- Thème --- */
 function applyTheme() {
@@ -1874,7 +1939,11 @@ const actions = {
   'quick-app': k => { const r = refOf(k); D.appliances.push({id: uid(), meterId: meter().id, type: k, name: refName(k), qty: 1, brand: '', ref: '', size: '', watts: r.w, hours: r.h, duty: '', sb: ''}); save(); render(); toast(t('{n} ajouté', {n: refName(k)})); },
   'quick-add-list': () => openModal(t('Ajout rapide'), `<div class="chips">${REF.map(r => `<button class="chip" data-action="quick-app" data-id="${r.k}">${r.e} ${refName(r.k)}</button>`).join('')}</div>`),
   'app-sort': id => { state.appSort = id; render(); },
-  'scan-label': () => { const i = $('#labelFile'); if (i) { i.value = ''; i.click(); } },
+  'scan-label': () => camOpen(),
+  'cam-shot': () => camShot(),
+  'cam-close': () => camClose(),
+  'cam-torch': () => camTorchToggle(),
+  'cam-file': () => { camClose(); pickLabelFile(); },
   'scan-pick': w => { setScanWatts(num(w)); toast(t('Puissance : {w}', {w: W(num(w))})); },
   'text-import': () => textImportModal(),
   'ti-parse': () => { tiItems = parseText($('#tiText').value); tiRender(); },
@@ -2023,7 +2092,7 @@ document.addEventListener('submit', e => {
   const f = e.target, name = f.dataset.form; if (!name || !forms[name]) return;
   e.preventDefault(); forms[name](Object.fromEntries(new FormData(f)), f);
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#modal').classList.contains('open')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if ($('#cam').classList.contains('open')) return camClose(); if ($('#modal').classList.contains('open')) closeModal(); });
 window.addEventListener('hashchange', () => { const v = location.hash.slice(1) || 'home'; if (views[v]) { state.view = v; closeModal(); render(); window.scrollTo(0, 0); } });
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 window.addEventListener('storage', e => { if (e.key === KEY) { D = load(); render(); } });
@@ -2068,7 +2137,7 @@ fr: [
 <li><b>Heures par jour</b> : soyez honnête, c'est le chiffre qui change le plus le résultat.</li>
 <li><b>Réglages avancés</b> : le « temps de marche réel » sert pour les appareils qui s'arrêtent tout seuls (frigo ≈ 40 %, clim classique ≈ 80 %, clim inverter ≈ 45 %). La « veille » est ce que l'appareil consomme éteint mais branché.</li>
 <li>Le <b>mode détective</b> permet de remplacer la valeur estimée par une mesure réelle.</li></ul>`],
-['📷 Scanner l\'étiquette d\'un appareil', `<p>Dans le formulaire d'un appareil, touchez <b>📷 Scanner l'étiquette</b> et prenez en photo la plaque signalétique (souvent derrière ou dessous). L'appli lit la puissance et remplit le champ « Puissance (W) ».</p>
+['📷 Scanner l\'étiquette d\'un appareil', `<p>Dans le formulaire d'un appareil, touchez <b>📷 Scanner l'étiquette</b> : la caméra s'ouvre dans l'appli. Placez la plaque signalétique (souvent derrière ou dessous) dans le cadre et touchez le bouton blanc. Vous pouvez aussi allumer la lampe 🔦 ou choisir une photo de la galerie 🖼️. L'appli lit la puissance et remplit le champ « Puissance (W) ».</p>
 <ul><li>Elle cherche « W » ou « kW » (ex. <code>1500W</code>, <code>2,2kW</code>). Pour une clim, elle prend la <b>puissance absorbée</b> et ignore la capacité frigorifique.</li>
 <li>S'il n'y a que des ampères, elle calcule <b>W = 220 V × A</b> : c'est un maximum, la vraie consommation est souvent un peu plus basse.</li>
 <li>Pour une bonne lecture : bonne lumière, pas de flash direct, photo nette, de près et bien droite.</li>
@@ -2117,7 +2186,7 @@ en: [
 ['✍️ Recording balances and top-ups', `<ul><li>The <b>balance</b> is the kWh left shown on the meter.</li><li>Before each top-up, note the balance <b>BEFORE</b> typing the 20-digit token: that is how the app knows exactly what you used.</li><li>Started mid-month? Enter kWh already bought this month in <b>Tiers & tariffs</b>.</li><li>Best: one reading at a fixed time (morning). Evening + morning readings reveal night consumption.</li></ul>`],
 ['📈 How consumption is calculated', `<p>Between two points, consumption = <b>balance after the first point − balance before the second</b>. It is spread day by day; unusual days are shown in red. Estimated balance = last known balance − average use × time elapsed. Days left = estimated balance ÷ daily average.</p>`],
 ['🔌 Appliances', `<ul><li><b>Power (W)</b> is on the label. For AC look for "Input power".</li><li>Unknown? The <b>reference table</b> gives a typical value; size (HP, inches, litres) adjusts it.</li><li><b>Hours per day</b> matter most.</li><li><b>Advanced</b>: duty cycle (fridge ≈ 40 %, AC ≈ 80 %, inverter ≈ 45 %) and standby power.</li></ul>`],
-['📷 Scan an appliance label', `<p>In an appliance form, tap <b>📷 Scan the label</b> and photograph the rating plate (usually on the back or underneath). The app reads the power and fills in "Power (W)".</p><ul><li>It looks for "W" or "kW". For AC it takes the <b>input power</b>, not the cooling capacity.</li><li>Amps only? It computes <b>W = 220 V × A</b>, a maximum.</li><li>Good light, no direct flash, sharp close-up photo.</li><li>First time: downloads the reader (≈ 5 MB, internet needed), then works offline. The photo stays on your phone.</li><li>Always check the value before saving.</li></ul>`],
+['📷 Scan an appliance label', `<p>In an appliance form, tap <b>📷 Scan the label</b>: the camera opens inside the app. Fit the rating plate (usually on the back or underneath) in the frame and tap the white button. You can also turn on the light 🔦 or pick a photo from the gallery 🖼️. The app reads the power and fills in "Power (W)".</p><ul><li>It looks for "W" or "kW". For AC it takes the <b>input power</b>, not the cooling capacity.</li><li>Amps only? It computes <b>W = 220 V × A</b>, a maximum.</li><li>Good light, no direct flash, sharp close-up photo.</li><li>First time: downloads the reader (≈ 5 MB, internet needed), then works offline. The photo stays on your phone.</li><li>Always check the value before saving.</li></ul>`],
 ['📝 Describe appliances in text', `<p>Write naturally: <code>2 Samsung TVs 43 inches 5h, 1 LG AC 1.5 HP inverter 8h, 3 fans 10h</code>. Precise format: <code>Qty | Type | Brand | Model | W | hours/day</code>. The "🤖 AI" button copies a ready prompt for Claude or Gemini.</p>`],
 ['🧮 Calculator and receipt checker', `<p><b>Calculator</b>: amount → kWh now vs on the 1st, or kWh → amount, plus the maximum to stay in your tier. <b>Checker</b>: enter amount paid and kWh received; the app compares with the official grid, explains where the money went and can calibrate your grid from a detailed receipt.</p>`],
 ['🕵️ Detective mode', `<ol><li>Find the meter's LED (marked "imp/kWh", usually 1000 or 1600) and set it in Settings.</li><li>Switch everything off and measure the <b>base</b> by tapping at each blink for 30 s. It should be below 15 W.</li><li>Switch on <b>one</b> appliance and measure it.</li><li>Much higher than expected = suspect appliance. Tap "Apply" to update the inventory.</li></ol>`],
@@ -2140,7 +2209,7 @@ wo: [
 <ul><li><b>Tranche 1</b> (0 ba 150 kWh ci weer wi) : njëg li gën a yomb.</li><li><b>Tranche 2</b> (lu ëpp 150 kWh) : kWh bi dafa gën a jafe.</li><li>Lu ëpp 250 kWh ci weer wi, <b>TVA 18 %</b> dina ci yokku.</li></ul>
 <div class="alert alert-amber"><span class="a-ic">⚠️</span><span>KWh yi nga <b>jënd</b> ñoo am solo, du yi nga jëfandikoo. Recharge bu mag ci 28 bi dina la jafe : ci 1 bi, xaalis bi dina la may kWh yu ëpp.</span></div>`],
 ['🤔 Lu tax may lekk 15 kWh ci bés ?', `<ol><li><b>Tàng gi</b> : klim ak ventilatoor yi dañuy gën a dox.</li><li><b>Frigo bu sonn</b> te du taxaw.</li><li><b>Jumtukaay bu bees</b>.</li><li><b>Tranche yi</b> : soo gën a jënd ci weer wi, kWh bi dina gën a jafe.</li><li><b>Jafe-jafe ci kuraŋ bi</b> : fil bu yàqu, dëkkandoo bu la song, kontöör bu yàqu.</li></ol><p>Jëfandikool <b>Mode détective</b>.</p>`],
-['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> te fotoo étiquette bi (ci ginaaw walla ci suuf). Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
+['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
 ['📲 Installer appli bi', installHelp],
@@ -2211,6 +2280,10 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Galerie": "Gallery",
+"Capturer": "Capture",
+"Caméra indisponible : choisissez une photo.": "Camera unavailable: choose a photo.",
+"Placez l'étiquette dans le cadre, bien nette, puis touchez le bouton blanc.": "Fit the label inside the frame, sharp, then tap the white button.",
 "Scanner l'étiquette": "Scan the label",
 "Photographiez l'étiquette (derrière ou dessous l'appareil) : la puissance se remplit toute seule.": "Take a photo of the label (on the back or underneath): the power fills in by itself.",
 "Puissance : {w}": "Power: {w}",
@@ -2828,6 +2901,10 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Galerie": "Galerie",
+"Capturer": "Foto",
+"Caméra indisponible : choisissez une photo.": "Caméra bi manul dox : tànnal benn foto.",
+"Placez l'étiquette dans le cadre, bien nette, puis touchez le bouton blanc.": "Defal étiquette bi ci biir cadre bi, mu leer bu baax, ba noppi bësal bouton bu weex bi.",
 "Scanner l'étiquette": "Scanner étiquette bi",
 "Photographiez l'étiquette (derrière ou dessous l'appareil) : la puissance se remplit toute seule.": "Fotoo étiquette bi (ci ginaaw walla ci suufu jumtukaay bi) : puissance bi dina bindu moom kepp.",
 "Puissance : {w}": "Puissance : {w}",
