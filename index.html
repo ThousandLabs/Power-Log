@@ -988,7 +988,8 @@ function parseLabel(raw) {
   const BAD = /CAPACIT|COOLING|REFROIDISS|FRIGORIF|DEFROST|D[EÉ]GIVR|LAMP|AMPOULE|OUTPUT|SORTIE|STANDBY|VEILLE|BTU|KWH/;
   const watts = [], amps = [], volts = [];
   let model = '', brand = '';
-  lines.forEach(l => {
+  lines.forEach((l, li) => {
+    if (!model && /^\W*MOD[EÈÉ]LE?\s*(?:NO\.?|N[°O]\.?)?\s*[:.]?\s*$/.test(l) && lines[li + 1]) { const mm = lines[li + 1].trim().match(/^([A-Z0-9][A-Z0-9\-\/.]{3,24})/); if (mm && /\d/.test(mm[1])) model = mm[1].replace(/[.\-\/]+$/, ''); }
     for (const m of l.matchAll(/(\d{1,5}(?:[.,]\d{1,3})?)\s*(?:[-~\/]\s*(\d{1,5}(?:[.,]\d{1,3})?)\s*)?(KW|W)(?![A-Z])/g)) {
       let w = Math.max(n(m[1]), m[2] ? n(m[2]) : 0);
       if (m[3] === 'KW') w *= 1000;
@@ -1002,7 +1003,14 @@ function parseLabel(raw) {
     for (const m of l.matchAll(/(\d{1,3}(?:[.,]\d{1,2})?)\s*(MA|A)(?![A-Z])/g)) {
       let a = n(m[1]); if (m[2] === 'MA') a /= 1000;
       if (!(a > 0 && a <= 60)) continue;
-      if (!(/OUTPUT|SORTIE/.test(l) && !/INPUT|ENTR/.test(l.slice(0, m.index)))) amps.push({a, line: l.trim()});
+      if (/OUTPUT|SORTIE/.test(l) && !/INPUT|ENTR/.test(l.slice(0, m.index))) continue;
+      // Tension basse sur la même ligne (adaptateur, ex. « 19 V === 2.7 A ») : W = cette tension × A
+      const lvm = l.slice(0, m.index).match(/(?<![\d.,])(\d{1,2}(?:[.,]\d{1,2})?)\s*V(?![A-Z])[^0-9]*$/);
+      let lv = lvm ? n(lvm[1]) : 0, fixed = '';
+      if (!(lv >= 3 && lv <= 60)) lv = 0;
+      // Virgule perdue par la lecture (« 27A » au lieu de « 2.7 A ») : impossible avec une tension basse
+      if (lv && a >= 10 && /^\d{2}$/.test(m[1]) && lv * a > 400) { fixed = m[1]; a = a / 10; }
+      amps.push({a, lv, fixed, score: GOOD.test(l) ? 1 : 0, line: l.trim()});
     }
     for (const m of l.matchAll(/(\d{3})\s*(?:[-~\/]\s*(\d{3})\s*)?V(?![A-Z])/g)) {
       const a = +m[1], b = m[2] ? +m[2] : a;
@@ -1015,17 +1023,18 @@ function parseLabel(raw) {
   // Réseau sénégalais : 220 V, sauf si l'étiquette indique une autre tension
   let volt = 220;
   if (volts.length && !volts.some(([a, b]) => a <= 220 && b >= 220)) volt = volts[0][0];
+  amps.sort((x, y) => y.score - x.score);
   const uniq = [];
   watts.sort((x, y) => y.score - x.score || y.w - x.w).forEach(x => { if (!uniq.some(u => u.w === x.w)) uniq.push(x); });
   let best = null;
   if (uniq.length && uniq[0].score >= 0) best = {w: uniq[0].w, how: 'w', line: uniq[0].line};
-  else if (amps.length) best = {w: Math.round(amps[0].a * volt), how: 'a', a: amps[0].a, v: volt, line: amps[0].line};
+  else if (amps.length) { const x = amps[0]; best = {w: Math.round(x.a * (x.lv || volt)), how: 'a', a: x.a, v: x.lv || volt, low: !!x.lv, fixed: x.fixed, line: x.line}; }
   else if (uniq.length) best = {w: uniq[0].w, how: 'w', line: uniq[0].line};
   const near = (a, b) => Math.abs(a - b) <= Math.max(a, b) * .05;
   const alts = [];
   const push = w => { if (!(best && near(w, best.w)) && !alts.some(x => near(x, w))) alts.push(w); };
   uniq.filter(x => x.score > -3).forEach(x => push(x.w));
-  if (best && best.how === 'w' && amps.length) push(Math.round(amps[0].a * volt));
+  if (best && best.how === 'w' && amps.length) push(Math.round(amps[0].a * (amps[0].lv || volt)));
   return {best, alts: alts.slice(0, 4), model, brand: brand ? niceBrand(brand) : '', volt};
 }
 
@@ -1079,7 +1088,8 @@ async function scanLabel(file) {
   try {
     const w = await getOCR();
     // Photo prise de travers ? On réessaie en la tournant.
-    for (const rot of [0, 90, 270]) {
+    for (const [rot, psm] of [[0, '6'], [0, '11'], [90, '6'], [270, '6']]) {
+      await w.setParameters({tessedit_pageseg_mode: psm});
       const {data} = await w.recognize(await labelCanvas(file, rot));
       const r = parseLabel(data.text);
       if (!text || r.best) text = data.text;
@@ -1110,7 +1120,9 @@ async function scanLabel(file) {
   if (res.model && !f.ref.value.trim()) f.ref.value = res.model.slice(0, 40);
   const brandSet = res.brand && !f.brand.value.trim(); if (brandSet) f.brand.value = res.brand.slice(0, 30);
   const how = res.best.how === 'a'
-    ? t('Calculée : {a} A × {v} V. C\'est un maximum : la consommation réelle est souvent un peu plus basse.', {a: nf(res.best.a, 2), v: res.best.v})
+    ? t('Calculée : {a} A × {v} V. C\'est un maximum : la consommation réelle est souvent un peu plus basse.', {a: nf(res.best.a, 2), v: nf(res.best.v, 1)})
+      + (res.best.low ? ' ' + t('(Tension de l\'adaptateur, pas celle de la prise.)') : '')
+      + (res.best.fixed ? ' ' + t('« {r} A » lu, compris comme {a} A : vérifiez sur l\'étiquette.', {r: res.best.fixed, a: nf(res.best.a, 2)}) : '')
     : t('Lu : « {l} »', {l: esc(res.best.line.slice(0, 60))});
   const alts = res.alts.length ? `<div class="mt-s"><small class="muted">${t('Autres valeurs lues :')}</small><div class="chips mt-s">${res.alts.map(w => `<button type="button" class="chip" data-action="scan-pick" data-id="${w}">${W(w)}</button>`).join('')}</div></div>` : '';
   box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}${brandSet ? `<br><small>${t('Marque : {b}', {b: esc(res.brand)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${alts}${raw}`);
@@ -2329,6 +2341,8 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"(Tension de l'adaptateur, pas celle de la prise.)": "(Adapter voltage, not the wall socket's.)",
+"« {r} A » lu, compris comme {a} A : vérifiez sur l'étiquette.": "Read \"{r} A\", understood as {a} A: check on the label.",
 "Modèle déjà connu : {w} (comme « {n} »)": "Known model: {w} (same as \"{n}\")",
 "Écrivez d'abord le modèle (ou scannez l'étiquette).": "Type the model first (or scan the label).",
 "Connexion internet nécessaire pour cette recherche.": "Internet connection needed for this search.",
@@ -2959,6 +2973,8 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"(Tension de l'adaptateur, pas celle de la prise.)": "(Tension adaptateur bi, du bu prise bi.)",
+"« {r} A » lu, compris comme {a} A : vérifiez sur l'étiquette.": "Jàng nañu « {r} A », nu jàpp ne {a} A la : seetal ci étiquette bi.",
 "Modèle déjà connu : {w} (comme « {n} »)": "Modèle bii xamees na ko : {w} (niki « {n} »)",
 "Écrivez d'abord le modèle (ou scannez l'étiquette).": "Bindal modèle bi jëkk (walla scanner étiquette bi).",
 "Connexion internet nécessaire pour cette recherche.": "Internet war na am ngir seet lii.",
