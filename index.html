@@ -920,7 +920,7 @@ function loadJsQR(){return new Promise((ok,ko)=>{if(window.jsQR)return ok();cons
 async function startScan(video,status,onText){
   stopScan();
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){status.textContent='📵 Caméra non disponible ici. Ouvrez l\'appli installée (site en https).';return}
-  try{scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false})}catch(e){status.textContent='📵 Accès à la caméra refusé. Autorise-le dans les réglages du navigateur.';return}
+  try{scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false})}catch(e){status.textContent='📵 Accès à la caméra refusé. Autorisez-le dans les réglages du navigateur.';return}
   video.setAttribute('playsinline','');video.muted=true;video.srcObject=scanStream;try{await video.play()}catch(e){}
   let detect=null;
   if('BarcodeDetector' in window){try{const bd=new BarcodeDetector({formats:['qr_code']});detect=async()=>{const r=await bd.detect(video);return r.length?r[0].rawValue:null}}catch(e){detect=null}}
@@ -1367,6 +1367,62 @@ function reminders(S) {
   return out;
 }
 
+/* --- Conseil de recharge : quand recharger et combien, selon la consommation réelle ---
+   • Date : 1 jour avant l'épuisement estimé (marge de sécurité).
+   • Montant : les tranches Woyofal repartent à zéro chaque mois. Si le crédit finit
+     avant la fin du mois → recharger juste le nécessaire jusqu'au 1er, puis la grosse
+     recharge du mois le 1er (premiers kWh au prix le plus bas). Sinon → une recharge
+     pour tout le mois, à partir du 1er. Montants arrondis aux 500 F supérieurs. */
+const roundUp = (f, P) => Math.max(num(P.min) || 0, Math.ceil(f / 500) * 500);
+function rechargeAdvice(S) {
+  const P = S.P;
+  if (!(S.avg > 0) || S.solde == null) return {need: true};
+  const now = Date.now(), d0 = new Date(), dayStart = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
+  const runOut = now + S.daysLeft * DAY;
+  let when = Math.max(now, runOut - DAY);
+  const nextMonth = new Date(d0.getFullYear(), d0.getMonth() + 1, 1).getTime();
+  const fmtD = ts => new Date(ts).toLocaleDateString(LOCALE(), {weekday: 'long', day: 'numeric', month: 'long'});
+  const urgent = S.daysLeft <= 1.2;
+  // Besoin pour un mois complet à partir du 1er du mois de recharge (prix depuis 0 kWh)
+  const monthPlan = (startTs, leftKwh) => {
+    const d = new Date(startTs), ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const k = Math.max(0, S.avg * daysInMonth(ym) - leftKwh);
+    const f = roundUp(costOf(P, 0, k, true).total, P);
+    return {ym, f, k: kwhFor(P, 0, f, true).kwh};
+  };
+  if (when < nextMonth - DAY) {
+    // Le crédit finit avant la fin du mois : on couvre jusqu'au 1er (+1 jour de marge)
+    const leftAt = Math.max(0, S.solde - S.avg * (when - now) / DAY);
+    const kNeed = Math.max(0, S.avg * ((nextMonth - when) / DAY + 1) - leftAt);
+    const first = isFirstOfMonth(S.ym);
+    const f = roundUp(costOf(P, S.bought, kNeed, first).total, P);
+    const got = kwhFor(P, S.bought, f, first).kwh;
+    const next = monthPlan(nextMonth, Math.max(0, leftAt + got - S.avg * (nextMonth - when) / DAY));
+    return {when, urgent, f, kwh: got, days: (leftAt + got) / S.avg, untilMonthEnd: true, next, fmtD, nextMonth};
+  }
+  // Le crédit tient jusqu'au mois prochain : grosse recharge du mois, à partir du 1er
+  if (when < nextMonth) when = nextMonth;
+  const leftAt = Math.max(0, S.solde - S.avg * (when - now) / DAY);
+  const plan = monthPlan(when, leftAt);
+  return {when, urgent, f: plan.f, kwh: plan.k, days: (leftAt + plan.k) / S.avg, untilMonthEnd: false, fmtD, waitFirst: runOut - DAY >= nextMonth && dayStart < nextMonth};
+}
+function adviceCard(S) {
+  const A = rechargeAdvice(S), P = S.P;
+  if (A.need) return `<div class="card mt"><h2>💡 ${t('Conseil de recharge')}</h2><p class="sub mt-s">${t('Notez le solde de votre compteur (et ajoutez vos appareils) : l\'appli vous dira quand recharger et combien.')}</p><button class="btn btn-sm mt" data-action="add-reading">✍️ ${t('Noter mon solde')}</button></div>`;
+  const date = A.urgent ? `<b>${t('Aujourd\'hui')}</b>` : `<b>${A.fmtD(A.when)}</b>`;
+  let h = `<div class="card mt"><h2>💡 ${t('Conseil de recharge')}</h2>
+    <div class="grid mt" style="grid-template-columns:1fr 1fr;gap:10px"><div class="stat" style="background:var(--surface2);border-radius:14px"><div class="k">📅 ${t('Quand')}</div><div class="v" style="font-size:15px;white-space:normal">${date}</div></div>
+    <div class="stat" style="background:var(--surface2);border-radius:14px"><div class="k">💰 ${t('Combien')}</div><div class="v">${F(A.f)}</div><div class="s">≈ ${K(A.kwh, 0)} · ${t('{d} jours', {d: nf(A.days, 0)})}</div></div></div>`;
+  if (A.untilMonthEnd) {
+    h += `<p class="sub mt">${t('Ce montant vous mène jusqu\'au début du mois prochain. Le 1er, les tranches repartent à zéro : faites alors la recharge du mois, environ <b>{f}</b> (≈ {k}), pour payer vos premiers kWh au prix le plus bas.', {f: F(A.next.f), k: K(A.next.k, 0)})}</p>`;
+  } else {
+    h += `<p class="sub mt">${A.waitFirst ? t('Votre crédit tient jusqu\'au mois prochain : inutile de recharger avant le 1er, quand les tranches repartent à zéro.') + ' ' : ''}${t('Ce montant couvre environ un mois avec votre consommation actuelle ({k}/jour).', {k: K(S.avg)})}</p>`;
+  }
+  if (S.m.budget > 0 && A.f > S.m.budget) h += `<p class="sub mt-s">⚠️ ${t('C\'est plus que votre budget de {b}. Pour rester dedans, réduisez la consommation (voir « Mes appareils ») ou rechargez en plusieurs fois.', {b: F(S.m.budget)})}</p>`;
+  h += `<p class="hint mt-s">${S.avgSource === 'real' ? t('Calculé avec votre vraie consommation et la grille {p}.', {p: esc(P.name || '')}) : t('Estimation d\'après vos appareils : notez votre solde tous les 1 à 3 jours pour un conseil plus précis.')}</p>`;
+  return h + `<div class="flex wrap mt-s" style="gap:8px"><button class="btn btn-sm" data-action="go" data-id="calcul">🧮 ${t('Calculer un autre montant')}</button></div></div>`;
+}
+
 const views = {};
 views.home = () => {
   const S = snapshot(), P = S.P, hasRead = !!S.C.last, apps = appsOf();
@@ -1390,10 +1446,11 @@ views.home = () => {
   if (!hasRead || !apps.length) {
     h += `<div class="card mt"><h2>🚀 ${t('Bien démarrer en 3 étapes')}</h2><div class="steps mt">
       <div class="step"><span class="n">${apps.length ? '✓' : 1}</span><span>${t('<b>Ajoutez vos appareils</b> (ou décrivez-les en une phrase) pour savoir qui consomme quoi.')} <button class="link-btn" data-action="go" data-id="appareils">${t('Mes appareils')}</button></span></div>
-      <div class="step"><span class="n">${hasRead ? '✓' : 2}</span><span>${t('<b>Notez le solde</b> affiché sur votre compteur, puis refais-le tous les 1 à 3 jours.')} <button class="link-btn" data-action="add-reading">${t('Noter mon solde')}</button></span></div>
+      <div class="step"><span class="n">${hasRead ? '✓' : 2}</span><span>${t('<b>Notez le solde</b> affiché sur votre compteur, puis refaites-le tous les 1 à 3 jours.')} <button class="link-btn" data-action="add-reading">${t('Noter mon solde')}</button></span></div>
       <div class="step"><span class="n">3</span><span>${t('À chaque recharge, notez <b>le montant, les kWh reçus et le solde AVANT recharge</b>. L\'appli calcule tout le reste.')}</span></div>
     </div></div>`;
   }
+  h += adviceCard(S);
   if (rem.length) h += `<div class="section"><div class="section-title">${t('Rappels & conseils')}</div><div class="alerts">${rem.map(r => alertBox(r.cls, r.ic, r.html, `<button class="icon-btn" style="width:28px;height:28px" data-action="dismiss" data-id="${r.key}" aria-label="${esc(t('Masquer'))}">${icon('x', 14)}</button>`)).join('')}</div></div>`;
   // Chiffres du mois
   const bud = S.m.budget > 0 ? clamp(S.spent / S.m.budget, 0, 1.5) : 0;
@@ -2051,7 +2108,7 @@ const actions = {
   'add-tranche': () => { const P = D.settings.profiles[state.editProf || meter().profile]; const last = P.tranches[P.tranches.length - 1], prevTo = P.tranches.length > 1 ? P.tranches[P.tranches.length - 2].to : 0; last.to = (prevTo || 0) + 100; P.tranches.push({to: null, p: last.p}); save(); render(); },
   'del-tranche': i => { const P = D.settings.profiles[state.editProf || meter().profile]; P.tranches.splice(+i, 1); P.tranches[P.tranches.length - 1].to = null; save(); render(); },
   export: async () => {
-    const r = await shareOrDownload(`power-log-sauvegarde-${today()}.json`, JSON.stringify({app: 'power-log', version: 1, exported: new Date().toISOString(), data: D}, null, 1));
+    const r = await shareOrDownload(`power-log-sauvegarde-${today()}.json`, JSON.stringify({app: 'power-log', version: 1, exported: new Date().toISOString(), dev: getLic().dev, data: D}, null, 1));
     if (r === 'cancel') return;
     D.settings.lastBackup = Date.now(); save(); toast(r === 'shared' ? t('Sauvegarde envoyée ✓') : t('Sauvegarde téléchargée 💾')); render();
   },
@@ -2131,6 +2188,8 @@ const live = {
     try {
       const o = JSON.parse(await file.text()); const d = o && o.app === 'power-log' ? o.data : o;
       if (!d || !d.meters || !d.settings) throw 0;
+      // Essai gratuit : pas de sauvegarde venant d'un autre appareil (sinon on pourrait enchaîner les essais)
+      if (!LIC_OK && !(o && o.dev && o.dev === getLic().dev)) { el.value = ''; return alert(t("Pendant l'essai gratuit, seules les sauvegardes faites sur ce téléphone peuvent être importées. Activez {app} pour récupérer une sauvegarde d'un autre appareil.", {app: APP})); }
       if (!confirm(t('Remplacer les données actuelles par celles du fichier ?'))) return;
       localStorage.setItem(KEY, JSON.stringify(d)); D = load(); save(); applyTheme(); buildNav(); render(); toast(t('Données importées ✓'));
     } catch (e) { toast(t('Fichier invalide.'), 'err'); }
@@ -2206,6 +2265,7 @@ fr: [
 <li><b>Heures par jour</b> : soyez honnête, c'est le chiffre qui change le plus le résultat.</li>
 <li><b>Réglages avancés</b> : le « temps de marche réel » sert pour les appareils qui s'arrêtent tout seuls (frigo ≈ 40 %, clim classique ≈ 80 %, clim inverter ≈ 45 %). La « veille » est ce que l'appareil consomme éteint mais branché.</li>
 <li>Le <b>mode détective</b> permet de remplacer la valeur estimée par une mesure réelle.</li></ul>`],
+['💡 Conseil de recharge', `<p>Sur l'écran d'accueil, la carte <b>💡 Conseil de recharge</b> vous dit <b>quand</b> recharger (1 jour avant l'épuisement estimé) et <b>combien</b> (arrondi aux 500 F).</p><ul><li>Si votre crédit finit avant la fin du mois, elle conseille de recharger juste ce qu'il faut jusqu'au 1er, puis de faire la recharge du mois le 1er : les tranches repartent alors à zéro et vos premiers kWh coûtent moins cher.</li><li>Sinon, elle propose une recharge qui couvre environ un mois.</li><li>Plus vous notez votre solde souvent, plus le conseil est juste.</li></ul>`],
 ['📷 Scanner l\'étiquette d\'un appareil', `<p>Dans le formulaire d'un appareil, touchez <b>📷 Scanner l'étiquette</b> : la caméra s'ouvre dans l'appli. Placez la plaque signalétique (souvent derrière ou dessous) dans le cadre et touchez le bouton blanc. Vous pouvez aussi allumer la lampe 🔦 ou choisir une photo de la galerie 🖼️. L'appli lit la puissance et remplit le champ « Puissance (W) ».</p>
 <ul><li>Elle cherche « W » ou « kW » (ex. <code>1500W</code>, <code>2,2kW</code>). Pour une clim, elle prend la <b>puissance absorbée</b> et ignore la capacité frigorifique.</li>
 <li>S'il n'y a que des ampères, elle calcule <b>W = 220 V × A</b> : c'est un maximum, la vraie consommation est souvent un peu plus basse.</li>
@@ -2256,6 +2316,7 @@ en: [
 ['✍️ Recording balances and top-ups', `<ul><li>The <b>balance</b> is the kWh left shown on the meter.</li><li>Before each top-up, note the balance <b>BEFORE</b> typing the 20-digit token: that is how the app knows exactly what you used.</li><li>Started mid-month? Enter kWh already bought this month in <b>Tiers & tariffs</b>.</li><li>Best: one reading at a fixed time (morning). Evening + morning readings reveal night consumption.</li></ul>`],
 ['📈 How consumption is calculated', `<p>Between two points, consumption = <b>balance after the first point − balance before the second</b>. It is spread day by day; unusual days are shown in red. Estimated balance = last known balance − average use × time elapsed. Days left = estimated balance ÷ daily average.</p>`],
 ['🔌 Appliances', `<ul><li><b>Power (W)</b> is on the label. For AC look for "Input power".</li><li>Unknown? The <b>reference table</b> gives a typical value; size (HP, inches, litres) adjusts it.</li><li><b>Hours per day</b> matter most.</li><li><b>Advanced</b>: duty cycle (fridge ≈ 40 %, AC ≈ 80 %, inverter ≈ 45 %) and standby power.</li></ul>`],
+['💡 Top-up advice', `<p>On the home screen, the <b>💡 Top-up advice</b> card tells you <b>when</b> to top up (1 day before your credit is expected to run out) and <b>how much</b> (rounded up to 500 F).</p><ul><li>If your credit runs out before the end of the month, it suggests buying just enough until the 1st, then doing your monthly top-up on the 1st, when the bands reset and your first kWh are cheaper.</li><li>Otherwise it suggests a top-up covering about a month.</li><li>The more often you note your balance, the better the advice.</li></ul>`],
 ['📷 Scan an appliance label', `<p>In an appliance form, tap <b>📷 Scan the label</b>: the camera opens inside the app. Fit the rating plate (usually on the back or underneath) in the frame and tap the white button. You can also turn on the light 🔦 or pick a photo from the gallery 🖼️. The app reads the power and fills in "Power (W)".</p><ul><li>It looks for "W" or "kW". For AC it takes the <b>input power</b>, not the cooling capacity.</li><li>Amps only? It computes <b>W = 220 V × A</b>, a maximum.</li><li>Good light, no direct flash, sharp close-up photo.</li><li>The scan also reads the <b>brand</b> and <b>model</b>. A model already saved in the app gets its power back automatically (handy for 2 identical ACs). If the power still can't be found, tap <b>🔎 Search this model online</b>.</li><li>First time: downloads the reader (≈ 5 MB, internet needed), then works offline. The photo stays on your phone.</li><li>Always check the value before saving.</li></ul>`],
 ['📝 Describe appliances in text', `<p>Write naturally: <code>2 Samsung TVs 43 inches 5h, 1 LG AC 1.5 HP inverter 8h, 3 fans 10h</code>. Precise format: <code>Qty | Type | Brand | Model | W | hours/day</code>. The "🤖 AI" button copies a ready prompt for Claude or Gemini.</p>`],
 ['🧮 Calculator and receipt checker', `<p><b>Calculator</b>: amount → kWh now vs on the 1st, or kWh → amount, plus the maximum to stay in your tier. <b>Checker</b>: enter amount paid and kWh received; the app compares with the official grid, explains where the money went and can calibrate your grid from a detailed receipt.</p>`],
@@ -2279,6 +2340,7 @@ wo: [
 <ul><li><b>Tranche 1</b> (0 ba 150 kWh ci weer wi) : njëg li gën a yomb.</li><li><b>Tranche 2</b> (lu ëpp 150 kWh) : kWh bi dafa gën a jafe.</li><li>Lu ëpp 250 kWh ci weer wi, <b>TVA 18 %</b> dina ci yokku.</li></ul>
 <div class="alert alert-amber"><span class="a-ic">⚠️</span><span>KWh yi nga <b>jënd</b> ñoo am solo, du yi nga jëfandikoo. Recharge bu mag ci 28 bi dina la jafe : ci 1 bi, xaalis bi dina la may kWh yu ëpp.</span></div>`],
 ['🤔 Lu tax may lekk 15 kWh ci bés ?', `<ol><li><b>Tàng gi</b> : klim ak ventilatoor yi dañuy gën a dox.</li><li><b>Frigo bu sonn</b> te du taxaw.</li><li><b>Jumtukaay bu bees</b>.</li><li><b>Tranche yi</b> : soo gën a jënd ci weer wi, kWh bi dina gën a jafe.</li><li><b>Jafe-jafe ci kuraŋ bi</b> : fil bu yàqu, dëkkandoo bu la song, kontöör bu yàqu.</li></ol><p>Jëfandikool <b>Mode détective</b>.</p>`],
+['💡 Xelal ngir recharge', `<p>Ci écran bu njëkk bi, carte <b>💡 Xelal ngir recharge</b> dina la wax <b>kañ</b> ngay recharger (benn fan balaa crédit bi jeex) ak <b>ñaata</b> (ñu yokk ko ba 500 F).</p><ul><li>Su sa crédit di jeex balaa weer wi jeex, dina la ne recharger li doy ba 1 bi, te def recharge bu weer wi ci 1 bi : tranche yi dañuy delloo ci zéro, sa kWh yu jëkk dañuy gën a yomb.</li><li>Lu ko moy, dina la digal recharge bu mat lu tollu ci benn weer.</li><li>Lu nga gën a bind sa solde, xelal bi dina gën a leer.</li></ul>`],
 ['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Scanner bi dina jàng itam <b>marque</b> ak <b>modèle</b>. Modèle bu ñu dencoon ci appli bi dina jël puissance bi moom kepp. Su puissance bi feeñul, bësal <b>🔎 Seet modèle bii ci internet</b>.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
@@ -2350,6 +2412,21 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Fermer": "Close",
+"Conseil de recharge": "Top-up advice",
+"Notez le solde de votre compteur (et ajoutez vos appareils) : l'appli vous dira quand recharger et combien.": "Note your meter balance (and add your appliances): the app will tell you when to top up and how much.",
+"Aujourd'hui": "Today",
+"Quand": "When",
+"Combien": "How much",
+"{d} jours": "{d} days",
+"Ce montant vous mène jusqu'au début du mois prochain. Le 1er, les tranches repartent à zéro : faites alors la recharge du mois, environ <b>{f}</b> (≈ {k}), pour payer vos premiers kWh au prix le plus bas.": "This amount takes you to the start of next month. On the 1st, the bands reset: then make your monthly top-up, about <b>{f}</b> (≈ {k}), to pay your first kWh at the lowest price.",
+"Votre crédit tient jusqu'au mois prochain : inutile de recharger avant le 1er, quand les tranches repartent à zéro.": "Your credit lasts until next month: no need to top up before the 1st, when the bands reset.",
+"Ce montant couvre environ un mois avec votre consommation actuelle ({k}/jour).": "This amount covers about a month at your current usage ({k}/day).",
+"C'est plus que votre budget de {b}. Pour rester dedans, réduisez la consommation (voir « Mes appareils ») ou rechargez en plusieurs fois.": "That's more than your {b} budget. To stay within it, cut usage (see \"My appliances\") or top up in several goes.",
+"Calculé avec votre vraie consommation et la grille {p}.": "Based on your real usage and the {p} tariff.",
+"Estimation d'après vos appareils : notez votre solde tous les 1 à 3 jours pour un conseil plus précis.": "Estimate based on your appliances: note your balance every 1–3 days for sharper advice.",
+"Calculer un autre montant": "Calculate another amount",
+"Pendant l'essai gratuit, seules les sauvegardes faites sur ce téléphone peuvent être importées. Activez {app} pour récupérer une sauvegarde d'un autre appareil.": "During the free trial, only backups made on this phone can be imported. Activate {app} to restore a backup from another device.",
 "(Alimentation 100-240 V : le courant indiqué vaut pour {v} V.)": "(100-240 V power supply: the current shown applies at {v} V.)",
 "Valeur habituelle pour ce type d'appareil :": "Usual value for this type of appliance:",
 "(Tension de l'adaptateur, pas celle de la prise.)": "(Adapter voltage, not the wall socket's.)",
@@ -2481,7 +2558,7 @@ const I18N = {
 "Bien démarrer en 3 étapes": "Get started in 3 steps",
 "<b>Ajoutez vos appareils</b> (ou décrivez-les en une phrase) pour savoir qui consomme quoi.": "<b>Add your appliances</b> (or describe them in one sentence) to see what uses what.",
 "Mes appareils": "My appliances",
-"<b>Notez le solde</b> affiché sur votre compteur, puis refais-le tous les 1 à 3 jours.": "<b>Record the balance</b> shown on your meter, then do it again every 1 to 3 days.",
+"<b>Notez le solde</b> affiché sur votre compteur, puis refaites-le tous les 1 à 3 jours.": "<b>Record the balance</b> shown on your meter, then do it again every 1 to 3 days.",
 "À chaque recharge, notez <b>le montant, les kWh reçus et le solde AVANT recharge</b>. L'appli calcule tout le reste.": "At each top-up, record <b>the amount, the kWh received and the balance BEFORE top-up</b>. The app calculates the rest.",
 "Rappels & conseils": "Reminders & tips",
 "Masquer": "Hide",
@@ -2984,6 +3061,21 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Fermer": "Tëj",
+"Conseil de recharge": "Xelal ngir recharge",
+"Notez le solde de votre compteur (et ajoutez vos appareils) : l'appli vous dira quand recharger et combien.": "Bindal solde bu compteur bi (te yokk say jumtukaay) : appli bi dina la wax kañ ngay recharger ak ñaata.",
+"Aujourd'hui": "Tey",
+"Quand": "Kañ",
+"Combien": "Ñaata",
+"{d} jours": "{d} fan",
+"Ce montant vous mène jusqu'au début du mois prochain. Le 1er, les tranches repartent à zéro : faites alors la recharge du mois, environ <b>{f}</b> (≈ {k}), pour payer vos premiers kWh au prix le plus bas.": "Xaalis bii dina la yóbbu ba ci ndoorteelu weer wi ci kanam. Ci 1 bi, tranche yi dañuy delloo ci zéro : defal recharge bu weer wi, lu tollu ci <b>{f}</b> (≈ {k}), ngir fay sa kWh yu jëkk ci njëg bi gën a yomb.",
+"Votre crédit tient jusqu'au mois prochain : inutile de recharger avant le 1er, quand les tranches repartent à zéro.": "Sa crédit dina mat ba weer wi ci kanam : bul recharger balaa 1 bi, bi tranche yi di delloo ci zéro.",
+"Ce montant couvre environ un mois avec votre consommation actuelle ({k}/jour).": "Xaalis bii dina mat lu tollu ci benn weer ak sa jëfandikoo léegi ({k}/fan).",
+"C'est plus que votre budget de {b}. Pour rester dedans, réduisez la consommation (voir « Mes appareils ») ou rechargez en plusieurs fois.": "Lii ëpp na sa budget bu {b}. Wàññil jëfandikoo bi (xoolal « Mes appareils ») walla recharger ci yenn yoon.",
+"Calculé avec votre vraie consommation et la grille {p}.": "Ñu ngi ko waññe ak sa jëfandikoo bu dëgg ak grille {p}.",
+"Estimation d'après vos appareils : notez votre solde tous les 1 à 3 jours pour un conseil plus précis.": "Xayma bu jóge ci say jumtukaay : bindal sa solde 1 ba 3 fan yu nekk ngir xelal bu gën a leer.",
+"Calculer un autre montant": "Waññ beneen xaalis",
+"Pendant l'essai gratuit, seules les sauvegardes faites sur ce téléphone peuvent être importées. Activez {app} pour récupérer une sauvegarde d'un autre appareil.": "Ci essai gratuit bi, sauvegarde yu ñu def ci téléphone bii rekk lañuy mën a importer. Activer leen {app} ngir jël sauvegarde bu jóge ci beneen téléphone.",
 "(Alimentation 100-240 V : le courant indiqué vaut pour {v} V.)": "(Alimentation 100-240 V : courant bi mu bind dafa jëm ci {v} V.)",
 "Valeur habituelle pour ce type d'appareil :": "Lim bi ñu baax ci jumtukaay bu niki lii :",
 "(Tension de l'adaptateur, pas celle de la prise.)": "(Tension adaptateur bi, du bu prise bi.)",
@@ -3115,7 +3207,7 @@ const I18N = {
 "Bien démarrer en 3 étapes": "Tàmbali ci 3 pas",
 "<b>Ajoutez vos appareils</b> (ou décrivez-les en une phrase) pour savoir qui consomme quoi.": "<b>Yokkal say jumtukaay</b> (walla bind leen ci benn baat) ngir xam kan moo lekk lan.",
 "Mes appareils": "Samay jumtukaay",
-"<b>Notez le solde</b> affiché sur votre compteur, puis refais-le tous les 1 à 3 jours.": "<b>Bindal solde bi</b> ci sa kontöör, te defaat ko benn bés ba ñett bés.",
+"<b>Notez le solde</b> affiché sur votre compteur, puis refaites-le tous les 1 à 3 jours.": "<b>Bindal solde bi</b> ci sa kontöör, te defaat ko benn bés ba ñett bés.",
 "À chaque recharge, notez <b>le montant, les kWh reçus et le solde AVANT recharge</b>. L'appli calcule tout le reste.": "Saa yu nga recharge, bindal <b>xaalis bi, kWh yi nga jot ak solde bi BALAA recharge</b>. Appli bi dina waññi li ci des.",
 "Rappels & conseils": "Fàttalikat ak xelal",
 "Masquer": "Nëbb",
