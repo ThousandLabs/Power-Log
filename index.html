@@ -1003,7 +1003,8 @@ function parseLabel(raw) {
     for (const m of l.matchAll(/(\d{1,3}(?:[.,]\d{1,2})?)\s*(MA|A)(?![A-Z])/g)) {
       let a = n(m[1]); if (m[2] === 'MA') a /= 1000;
       if (!(a > 0 && a <= 60)) continue;
-      if (/OUTPUT|SORTIE/.test(l) && !/INPUT|ENTR/.test(l.slice(0, m.index))) continue;
+      { const pre = l.slice(0, m.index), o = Math.max(pre.lastIndexOf('OUTPUT'), pre.lastIndexOf('SORTIE')), i = Math.max(pre.lastIndexOf('INPUT'), pre.lastIndexOf('ENTR'));
+        if (o >= 0 && o > i) continue; if (o < 0 && i < 0 && /^\W*(OUTPUT|SORTIE)/.test(l)) continue; }
       // Tension basse sur la même ligne (adaptateur, ex. « 19 V === 2.7 A ») : W = cette tension × A
       const lvm = l.slice(0, m.index).match(/(?<![\d.,])(\d{1,2}(?:[.,]\d{1,2})?)\s*V(?![A-Z])[^0-9]*$/);
       let lv = lvm ? n(lvm[1]) : 0, fixed = '';
@@ -1023,18 +1024,22 @@ function parseLabel(raw) {
   // Réseau sénégalais : 220 V, sauf si l'étiquette indique une autre tension
   let volt = 220;
   if (volts.length && !volts.some(([a, b]) => a <= 220 && b >= 220)) volt = volts[0][0];
+  // Alimentation universelle « 100-240 V » : le courant indiqué vaut pour la tension la plus basse
+  let uni = 0;
+  for (const l of lines) { const u = l.match(/(?<![\d.,])(9\d|1[0-2]\d)\s*V?\s*[-~–—\/]\s*(2[2-5]\d)(?!\d)/); if (u) { uni = +u[1]; break; } }
+  const ampV = x => x.lv || uni || volt;
   amps.sort((x, y) => y.score - x.score);
   const uniq = [];
   watts.sort((x, y) => y.score - x.score || y.w - x.w).forEach(x => { if (!uniq.some(u => u.w === x.w)) uniq.push(x); });
   let best = null;
   if (uniq.length && uniq[0].score >= 0) best = {w: uniq[0].w, how: 'w', line: uniq[0].line};
-  else if (amps.length) { const x = amps[0]; best = {w: Math.round(x.a * (x.lv || volt)), how: 'a', a: x.a, v: x.lv || volt, low: !!x.lv, fixed: x.fixed, line: x.line}; }
+  else if (amps.length) { const x = amps[0]; best = {w: Math.round(x.a * ampV(x)), how: 'a', a: x.a, v: ampV(x), low: !!x.lv, uni: !x.lv && !!uni, fixed: x.fixed, line: x.line}; }
   else if (uniq.length) best = {w: uniq[0].w, how: 'w', line: uniq[0].line};
   const near = (a, b) => Math.abs(a - b) <= Math.max(a, b) * .05;
   const alts = [];
   const push = w => { if (!(best && near(w, best.w)) && !alts.some(x => near(x, w))) alts.push(w); };
   uniq.filter(x => x.score > -3).forEach(x => push(x.w));
-  if (best && best.how === 'w' && amps.length) push(Math.round(amps[0].a * (amps[0].lv || volt)));
+  if (best && best.how === 'w' && amps.length) push(Math.round(amps[0].a * ampV(amps[0])));
   return {best, alts: alts.slice(0, 4), model, brand: brand ? niceBrand(brand) : '', volt};
 }
 
@@ -1122,10 +1127,14 @@ async function scanLabel(file) {
   const how = res.best.how === 'a'
     ? t('Calculée : {a} A × {v} V. C\'est un maximum : la consommation réelle est souvent un peu plus basse.', {a: nf(res.best.a, 2), v: nf(res.best.v, 1)})
       + (res.best.low ? ' ' + t('(Tension de l\'adaptateur, pas celle de la prise.)') : '')
+      + (res.best.uni ? ' ' + t('(Alimentation 100-240 V : le courant indiqué vaut pour {v} V.)', {v: res.best.v}) : '')
       + (res.best.fixed ? ' ' + t('« {r} A » lu, compris comme {a} A : vérifiez sur l\'étiquette.', {r: res.best.fixed, a: nf(res.best.a, 2)}) : '')
     : t('Lu : « {l} »', {l: esc(res.best.line.slice(0, 60))});
+  // Calculée depuis les ampères = un maximum : on propose aussi la valeur habituelle pour ce type d'appareil
+  const typ = res.best.how === 'a' ? sizedWatts(f.type.value, f.size.value) : 0;
+  const typChip = typ && typ < res.best.w * .8 ? `<div class="mt-s"><small class="muted">${t('Valeur habituelle pour ce type d\'appareil :')}</small><div class="chips mt-s"><button type="button" class="chip" data-action="scan-pick" data-id="${typ}">${W(typ)}</button></div></div>` : '';
   const alts = res.alts.length ? `<div class="mt-s"><small class="muted">${t('Autres valeurs lues :')}</small><div class="chips mt-s">${res.alts.map(w => `<button type="button" class="chip" data-action="scan-pick" data-id="${w}">${W(w)}</button>`).join('')}</div></div>` : '';
-  box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}${brandSet ? `<br><small>${t('Marque : {b}', {b: esc(res.brand)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${alts}${raw}`);
+  box.innerHTML = alertBox('green', '✅', `<b>${t('Puissance trouvée : {w}', {w: W(res.best.w)})}</b><br><small>${how}</small>${res.model && f.ref.value === res.model.slice(0, 40) ? `<br><small>${t('Modèle : {m}', {m: esc(res.model)})}</small>` : ''}${brandSet ? `<br><small>${t('Marque : {b}', {b: esc(res.brand)})}</small>` : ''}<br><small>${t('Vérifiez la valeur avant d\'enregistrer.')}</small>${typChip}${alts}${raw}`);
 }
 /* Caméra intégrée : on vise l'étiquette dans le cadre, on capture, la lecture démarre.
    Repli automatique sur l'appareil photo / la galerie si la caméra est indisponible. */
@@ -2341,6 +2350,8 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"(Alimentation 100-240 V : le courant indiqué vaut pour {v} V.)": "(100-240 V power supply: the current shown applies at {v} V.)",
+"Valeur habituelle pour ce type d'appareil :": "Usual value for this type of appliance:",
 "(Tension de l'adaptateur, pas celle de la prise.)": "(Adapter voltage, not the wall socket's.)",
 "« {r} A » lu, compris comme {a} A : vérifiez sur l'étiquette.": "Read \"{r} A\", understood as {a} A: check on the label.",
 "Modèle déjà connu : {w} (comme « {n} »)": "Known model: {w} (same as \"{n}\")",
@@ -2973,6 +2984,8 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"(Alimentation 100-240 V : le courant indiqué vaut pour {v} V.)": "(Alimentation 100-240 V : courant bi mu bind dafa jëm ci {v} V.)",
+"Valeur habituelle pour ce type d'appareil :": "Lim bi ñu baax ci jumtukaay bu niki lii :",
 "(Tension de l'adaptateur, pas celle de la prise.)": "(Tension adaptateur bi, du bu prise bi.)",
 "« {r} A » lu, compris comme {a} A : vérifiez sur l'étiquette.": "Jàng nañu « {r} A », nu jàpp ne {a} A la : seetal ci étiquette bi.",
 "Modèle déjà connu : {w} (comme « {n} »)": "Modèle bii xamees na ko : {w} (niki « {n} »)",
