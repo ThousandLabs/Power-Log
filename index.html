@@ -699,7 +699,7 @@ const refName = k => t(refOf(k).n);
    • L'appli ne contient que la clé PUBLIQUE : impossible de fabriquer un code.
    • La licence est stockée à part : « Tout effacer » ne la supprime pas.
    ========================================================================= */
-const APP = 'Power Log';
+const APP = "Power Log";
 const TEAM = 'Thousand Labs';
 const CONTACT = '221711216581', CONTACT_FMT = '71 121 65 81';
 const SITE_URL = 'https://thousandlabs.github.io/Power-Log/';   // lien officiel (GitHub Pages)
@@ -730,13 +730,13 @@ async function checkSig(sig) {
 function storeSig(c) { const lic = getLic(); lic.sig = c; lic.at = Date.now(); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} LIC_OK = true; }
 function unlockApp() { document.body.classList.remove('locked'); $('#lock').innerHTML = ''; buildNav(); render(); toast(t('{app} est activé. Bienvenue !', {app: APP})); }
 
-/* ---------- ESSAI GRATUIT 24 H ----------
-   • Bouton « Commencer l'essai gratuit » sur l'écran d'activation : 24 h d'accès
+/* ---------- ESSAI GRATUIT 48 H ----------
+   • Bouton « Commencer l'essai gratuit » sur l'écran d'activation : 48 h d'accès
      complet, une seule fois par appareil (début stocké avec la licence).
    • « Tout effacer » ne remet pas l'essai à zéro.
    • Horloge du téléphone reculée de plus de 10 min → essai considéré terminé.
    • À la fin, l'appli se verrouille et demande un code ; les données sont conservées. */
-const TRIAL_MS = 24 * 3600 * 1000;
+const TRIAL_MS = 48 * 3600 * 1000;
 let trialTimer = null;
 function trialInfo() {
   const lic = getLic(), start = +lic.trial || 0;
@@ -762,21 +762,117 @@ function enterTrial(first) {
   trialTouch();
   document.body.classList.remove('locked'); $('#lock').innerHTML = ''; buildNav(); render();
   if (!trialTimer) trialTimer = setInterval(trialTick, 30000);
-  if (first) toast(t('Essai gratuit activé : 24 h pour tout découvrir !'));
+  if (first) toast(t('Essai gratuit activé : 48 h pour tout découvrir !'));
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && trialTimer) trialTick(); });
 const waLink = text => `https://wa.me/${CONTACT}?text=${encodeURIComponent(text)}`;
 
 /* ---------- Thousand Labs : signature avec logo (écran d'activation + licence) ---------- */
 function tlBrand(big){var s=big?40:28;return '<div class="tlbrand" style="display:flex;align-items:center;justify-content:center;gap:10px;margin:16px 0 4px"><svg width="'+s+'" height="'+s+'" viewBox="0 -2 120 120" aria-hidden="true" style="flex-shrink:0"><path d="M20 102 V22 L60 72 L100 22 V102" fill="none" stroke="currentColor" stroke-width="15"/><circle cx="60" cy="44" r="7" fill="#E8A317"/><circle cx="70" cy="27" r="4.5" fill="#E8A317"/></svg><span style="line-height:1.15;text-align:left"><span style="display:block;font-size:12px;opacity:.75">'+t('Une appli de')+'</span><b style="letter-spacing:1.5px">THOUSAND LABS</b></span></div>'+(big?'<p style="text-align:center;margin:4px 0 0;font-size:14px"><a href="https://thousandlabs.github.io/" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">'+t('Découvrir nos autres applis')+'</a></p>':'')}
+/* =====================================================================
+   Thousand Labs — module « Acheter » (écran d'activation)
+   Le client choisit sa formule, paie par Wave / Orange Money / espèces,
+   indique le numéro qui a payé (pour vérification), puis envoie sa
+   demande complète sur WhatsApp en un seul message.
+   TLBUY.html() → bloc à insérer dans l'écran d'activation.
+   ===================================================================== */
+var TLBUY=(function(){
+  var C={app:'',dev:function(){return ''},plans:[],unit:0,pay:'221711216581',payFmt:'71 121 65 81',wa:'221711216581',lang:function(){return 'fr'},note:''};
+  var S={p:0,q:1,m:'wave'};
+  var EN={
+    "🛒 Acheter {app}":"🛒 Buy {app}",
+    "1. Choisis ta formule":"1. Choose your plan","1. Choisissez votre formule":"1. Choose your plan",
+    "personne":"person","personnes":"people","appareil":"device","appareils":"devices",
+    "Nombre d’appareils":"Number of devices",
+    "Total à payer":"Total to pay",
+    "2. Paie":"2. Pay","2. Payez":"2. Pay",
+    "Envoie {total} au":"Send {total} to","Envoyez {total} au":"Send {total} to",
+    "Espèces (en main propre)":"Cash (in person)",
+    "Copier le numéro":"Copy number","Copié ✓":"Copied ✓",
+    "3. Envoie ta demande":"3. Send your request","3. Envoyez votre demande":"3. Send your request",
+    "Numéro qui a payé":"Number that paid",
+    "Ex. 77 123 45 67":"E.g. 77 123 45 67",
+    "Identifiants des autres personnes (un par ligne)":"Other people’s device IDs (one per line)",
+    "Facultatif : tu pourras aussi les envoyer plus tard.":"Optional: you can also send them later.",
+    "Facultatif : vous pourrez aussi les envoyer plus tard.":"Optional: you can also send them later.",
+    "✅ J’ai payé : envoyer ma demande":"✅ I’ve paid: send my request",
+    "💬 Envoyer ma demande (paiement en espèces)":"💬 Send my request (cash payment)",
+    "Indique le numéro qui a payé, pour que le paiement soit vérifié.":"Enter the number that paid, so the payment can be checked.",
+    "Indiquez le numéro qui a payé, pour que le paiement soit vérifié.":"Enter the number that paid, so the payment can be checked.",
+    "Ton code arrive sur WhatsApp dès que le paiement est vérifié. Colle-le ensuite ci-dessous.":"Your code arrives on WhatsApp as soon as the payment is checked. Then paste it below.",
+    "Votre code arrive sur WhatsApp dès que le paiement est vérifié. Collez-le ensuite ci-dessous.":"Your code arrives on WhatsApp as soon as the payment is checked. Then paste it below.",
+    "Groupe : une seule personne paie pour tous et envoie les identifiants de chacun.":"Group: one person pays for everyone and sends each person’s device ID.",
+    "Un code par appareil.":"One code per device."
+  };
+  function lg(){try{return C.lang()==='en'?'en':'fr'}catch(e){return 'fr'}}
+  function T(s,v){var r=lg()==='en'&&EN[s]?EN[s]:s;if(v)for(var k in v)r=r.split('{'+k+'}').join(v[k]);return r}
+  function vous(a,b){return C.vous?b:a}
+  function fmtF(n){return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ')+' F'}
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function plan(){return C.plans.length?C.plans[Math.min(S.p,C.plans.length-1)]:{n:S.q,price:C.unit*S.q}}
+  function unitWord(n){return C.unitWord==='appareil'?(n>1?T('appareils'):T('appareil')):(n>1?T('personnes'):T('personne'))}
+  var hooked=false;
+  function init(cfg){for(var k in cfg)C[k]=cfg[k];
+    if(!hooked&&window.TLL){hooked=true;var prev=TLL.onchange;TLL.onchange=function(l){if(prev)try{prev(l)}catch(e){}redraw()}}}
+  function body(){
+    var p=plan(),h='';
+    h+='<p class="tlb-t">'+T(vous('1. Choisis ta formule','1. Choisissez votre formule'))+'</p>';
+    if(C.plans.length){h+='<div class="tlb-plans">'+C.plans.map(function(x,i){return '<button type="button" class="tlb-pl'+(i===S.p?' on':'')+'" onclick="TLBUY.pick('+i+')"><b>'+x.n+' '+unitWord(x.n)+'</b><span>'+fmtF(x.price)+'</span></button>'}).join('')+'</div>'}
+    else{h+='<div class="tlb-qty"><span>'+T('Nombre d’appareils')+'</span><button type="button" onclick="TLBUY.qty(-1)" aria-label="−">−</button><b>'+S.q+'</b><button type="button" onclick="TLBUY.qty(1)" aria-label="+">+</button></div><p class="tlb-mu">'+T('Un code par appareil.')+' '+fmtF(C.unit)+' × '+S.q+'</p>'}
+    if(C.note)h+='<p class="tlb-mu">'+esc(C.note)+'</p>';
+    h+='<div class="tlb-tot"><span>'+T('Total à payer')+'</span><b>'+fmtF(p.price)+'</b></div>';
+    h+='<p class="tlb-t">'+T(vous('2. Paie','2. Payez'))+'</p><div class="tlb-m">'+[['wave','🌊 Wave'],['om','🟠 Orange Money'],['cash','💵 '+T('Espèces (en main propre)')]].map(function(m){return '<button type="button" class="'+(S.m===m[0]?'on':'')+'" onclick="TLBUY.meth(\''+m[0]+'\')">'+m[1]+'</button>'}).join('')+'</div>';
+    if(S.m!=='cash')h+='<div class="tlb-pay">'+T(vous('Envoie {total} au','Envoyez {total} au'),{total:'<b>'+fmtF(p.price)+'</b>'})+'<div class="tlb-num">'+C.payFmt+'</div><button type="button" class="tlb-b2" onclick="TLBUY.cpy(this)">📋 '+T('Copier le numéro')+'</button></div>';
+    h+='<p class="tlb-t">'+T(vous('3. Envoie ta demande','3. Envoyez votre demande'))+'</p>';
+    if(S.m!=='cash')h+='<label class="tlb-l" for="tlb-ph">'+T('Numéro qui a payé')+'</label><input id="tlb-ph" class="tlb-in" type="tel" inputmode="tel" autocomplete="tel" placeholder="'+T('Ex. 77 123 45 67')+'">';
+    if(p.n>1)h+='<p class="tlb-mu">'+T('Groupe : une seule personne paie pour tous et envoie les identifiants de chacun.')+'</p><label class="tlb-l" for="tlb-ids">'+T('Identifiants des autres personnes (un par ligne)')+'</label><textarea id="tlb-ids" class="tlb-in" rows="3" spellcheck="false" autocomplete="off"></textarea><p class="tlb-mu">'+T(vous('Facultatif : tu pourras aussi les envoyer plus tard.','Facultatif : vous pourrez aussi les envoyer plus tard.'))+'</p>';
+    h+='<p class="tlb-er" id="tlb-er"></p><button type="button" class="tlb-go" onclick="TLBUY.send()">'+(S.m==='cash'?T('💬 Envoyer ma demande (paiement en espèces)'):T('✅ J’ai payé : envoyer ma demande'))+'</button>';
+    h+='<p class="tlb-mu">'+T(vous('Ton code arrive sur WhatsApp dès que le paiement est vérifié. Colle-le ensuite ci-dessous.','Votre code arrive sur WhatsApp dès que le paiement est vérifié. Collez-le ensuite ci-dessous.'))+'</p>';
+    return h}
+  function inner(){return '<p class="tlb-h">'+T('🛒 Acheter {app}',{app:esc(C.app)})+'</p><div id="tlb-b">'+body()+'</div>'}
+  function html(){return '<div class="tlb" id="tlb" data-notr>'+inner()+'</div>'}
+  function keep(){var a=document.getElementById('tlb-ph'),b=document.getElementById('tlb-ids');return [a?a.value:null,b?b.value:null]}
+  function redraw(){var k=keep(),el=document.getElementById('tlb');if(!el)return;el.innerHTML=inner();var a=document.getElementById('tlb-ph'),b=document.getElementById('tlb-ids');if(a&&k[0]!=null)a.value=k[0];if(b&&k[1]!=null)b.value=k[1]}
+  function pick(i){S.p=i;redraw()}
+  function qty(d){S.q=Math.max(1,Math.min(20,S.q+d));redraw()}
+  function meth(m){S.m=m;redraw()}
+  function cpy(b){var t=C.payFmt.replace(/\D/g,''),ok=function(){var o=b.innerHTML;b.textContent=T('Copié ✓');setTimeout(function(){b.innerHTML=o},1500)};
+    try{navigator.clipboard.writeText(t).then(ok,function(){fb()})}catch(e){fb()}
+    function fb(){var x=document.createElement('textarea');x.value=t;document.body.appendChild(x);x.select();try{document.execCommand('copy');ok()}catch(e){}x.remove()}}
+  function send(){
+    var p=plan(),er=document.getElementById('tlb-er'),ph=document.getElementById('tlb-ph'),ids=document.getElementById('tlb-ids'),num='';
+    if(S.m!=='cash'){num=(ph&&ph.value||'').replace(/[^\d+ ]/g,'').trim();if(num.replace(/\D/g,'').length<7){er.textContent=T(vous('Indique le numéro qui a payé, pour que le paiement soit vérifié.','Indiquez le numéro qui a payé, pour que le paiement soit vérifié.'));if(ph)ph.focus();return}}
+    er.textContent='';
+    var others=ids?ids.value.split(/[\n,;]+/).map(function(s){return s.trim()}).filter(Boolean):[];
+    var M={wave:'Wave',om:'Orange Money',cash:'espèces (en main propre)'}[S.m];
+    var msg='Bonjour, je prends '+C.app+' — '+p.n+' '+(C.unitWord==='appareil'?(p.n>1?'appareils':'appareil'):(p.n>1?'personnes':'personne'))+' ('+fmtF(p.price).replace(/ /g,' ')+').\n'
+      +(S.m==='cash'?'Paiement : en espèces, en main propre.\n':'Paiement : '+M+' depuis le '+num+'.\n')
+      +'Mon identifiant : '+C.dev();
+    if(p.n>1)msg+=others.length?'\nAutres identifiants :\n'+others.map(function(s,i){return (i+2)+'. '+s}).join('\n'):'\nJ’enverrai les autres identifiants ensuite.';
+    window.open('https://wa.me/'+C.wa+'?text='+encodeURIComponent(msg),'_blank','noopener')}
+  var CSS='.tlb{border:1.5px solid rgba(37,211,102,.55);border-radius:14px;padding:14px;margin:12px 0;text-align:left;background:rgba(37,211,102,.06)}'
+   +'.tlb-h{font-weight:700;font-size:17px;margin:0 0 4px}.tlb-t{font-weight:700;margin:14px 0 6px;font-size:15px}.tlb-mu{opacity:.75;font-size:13px;margin:6px 0}'
+   +'.tlb-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}.tlb-pl{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 6px;border-radius:12px;border:1.5px solid rgba(128,128,128,.4);background:transparent;color:inherit;font:inherit;cursor:pointer}.tlb-pl span{font-size:14px;opacity:.85}.tlb-pl.on{border-color:#1a9e52;background:rgba(37,211,102,.16);box-shadow:0 0 0 1px #1a9e52}'
+   +'.tlb-qty{display:flex;align-items:center;gap:10px}.tlb-qty span{flex:1}.tlb-qty button{width:40px;height:40px;border-radius:10px;border:1.5px solid rgba(128,128,128,.4);background:transparent;color:inherit;font-size:20px;cursor:pointer}.tlb-qty b{min-width:24px;text-align:center;font-size:18px}'
+   +'.tlb-tot{display:flex;justify-content:space-between;align-items:center;margin:10px 0 0;padding:10px 12px;border-radius:10px;background:rgba(128,128,128,.12)}.tlb-tot b{font-size:19px}'
+   +'.tlb-m{display:flex;flex-wrap:wrap;gap:6px}.tlb-m button{flex:1 1 auto;min-height:40px;padding:8px 10px;border-radius:999px;border:1.5px solid rgba(128,128,128,.4);background:transparent;color:inherit;font:600 14px system-ui,sans-serif;cursor:pointer}.tlb-m button.on{border-color:#1a9e52;background:rgba(37,211,102,.16)}'
+   +'.tlb-pay{margin:10px 0 0;padding:10px 12px;border-radius:10px;background:rgba(128,128,128,.12);text-align:center;font-size:14px}.tlb-num{font:700 24px/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:1px;margin:4px 0}'
+   +'.tlb-b2{border:1.5px solid rgba(128,128,128,.45);background:transparent;color:inherit;border-radius:999px;padding:6px 14px;font:600 13px system-ui,sans-serif;cursor:pointer}'
+   +'.tlb-l{display:block;font-weight:600;font-size:14px;margin:8px 0 4px}.tlb-in{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1.5px solid rgba(128,128,128,.45);background:rgba(255,255,255,.04);color:inherit;font:16px system-ui,sans-serif}textarea.tlb-in{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}'
+   +'.tlb-er{color:#d93025;font-size:14px;margin:6px 0 0;min-height:0}.tlb-er:empty{display:none}'
+   +'.tlb-go{display:block;width:100%;min-height:48px;margin:10px 0 0;border:0;border-radius:10px;background:#25d366;color:#fff;font:700 16px system-ui,sans-serif;cursor:pointer}';
+  try{var st=document.createElement('style');st.textContent=CSS;document.head.appendChild(st)}catch(e){}
+  return {init:init,html:html,pick:pick,qty:qty,meth:meth,cpy:cpy,send:send,redraw:redraw}
+})();
+
 function renderLock(err = '') {
   const lic = getLic(), ti = trialInfo();
   document.body.classList.add('locked');
   const trialHtml = ti.active
     ? `<div class="alert alert-amber"><span class="a-ic">🎁</span><span>${t('Essai gratuit en cours : il reste <b>{d}</b>.', {d: fmtLeft(ti.left)})}</span></div><button type="button" class="btn btn-block" data-action="trial-back">${t("← Continuer l'essai gratuit")}</button>`
     : ti.started
-      ? `<div class="alert alert-amber"><span class="a-ic">⏳</span><span>${t('Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.', {app: APP})}</span></div>`
-      : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 24 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
+      ? `<div class="alert alert-amber"><span class="a-ic">⏳</span><span>${t('Votre essai gratuit de 48 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.', {app: APP})}</span></div>`
+      : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 48 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
   const msg = t('Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}', {app: APP, price: PRICE ? ' (' + PRICE + ')' : '', dev: lic.dev});
   $('#lock').innerHTML = `<div class="lock-wrap"><div class="lock-card ${err ? 'shake' : ''}">
     <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${icon('bolt', 20)}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
@@ -789,7 +885,7 @@ function renderLock(err = '') {
       <div class="step"><span class="n">3</span><span>${t('Saisissez le <b>code d\'activation</b> reçu. C\'est tout !')}</span></div>
     </div>
     <div class="dev-box"><span class="label">${t('Votre code appareil')}</span><div class="dev-id">${lic.dev}</div><div class="flex" style="gap:8px;justify-content:center"><button class="btn btn-sm" data-action="lock-copy">${t('Copier')}</button><button class="btn btn-sm" data-action="lock-qr">🔳 QR</button></div></div>
-    <a class="btn btn-wa btn-block" href="${waLink(msg)}" target="_blank" rel="noopener">${t('Demander mon code sur WhatsApp')}</a>
+    ${(TLBUY.init({app:"Power Log",vous:true,unitWord:"appareil",unit:5000,dev:function(){return lic.dev},lang:function(){return lang()}}),TLBUY.html())}
     <form data-form="activate" class="stack" autocomplete="off">
       ${field(t("Code d'activation"), `<textarea class="input code-area" name="code" rows="3" placeholder="${esc(t('Collez ici le code reçu (tout le texte)'))}" autocomplete="off" spellcheck="false" required></textarea>`)}
       ${err ? `<div class="alert alert-red">${err}</div>` : ''}
@@ -2302,7 +2398,7 @@ fr: [
 <li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
 <li>Vider les données du navigateur efface tout : gardez toujours une sauvegarde récente.</li></ul>`],
 ['📲 Installer l\'application', installHelp],
-['🔑 Activation et code d\'accès', `<p>Chaque téléphone a son <b>code appareil</b> (ex : PL-7KQ2-M9XA), visible sur l'écran d'activation et dans les Réglages. Envoie-le sur WhatsApp au ${CONTACT_FMT} pour recevoir votre code d'activation, à coller une seule fois. Vous pouvez aussi scanner le QR code du vendeur. Le code ne fonctionne que sur votre téléphone.</p><p><b>Essai gratuit :</b> sur l'écran d'activation, touchez « Commencer l'essai gratuit » pour utiliser {app} pendant 24 h sans code (une seule fois par téléphone). À la fin, l'appli demande un code d'activation ; vos données sont conservées.</p>`.replace('{app}', APP)],
+['🔑 Activation et code d\'accès', `<p>Chaque téléphone a son <b>code appareil</b> (ex : PL-7KQ2-M9XA), visible sur l'écran d'activation et dans les Réglages. Envoie-le sur WhatsApp au ${CONTACT_FMT} pour recevoir votre code d'activation, à coller une seule fois. Vous pouvez aussi scanner le QR code du vendeur. Le code ne fonctionne que sur votre téléphone.</p><p><b>Essai gratuit :</b> sur l'écran d'activation, touchez « Commencer l'essai gratuit » pour utiliser {app} pendant 48 h sans code (une seule fois par téléphone). À la fin, l'appli demande un code d'activation ; vos données sont conservées.</p>`.replace('{app}', APP)],
 ['❓ Questions fréquentes', `<ul><li><b>Les chiffres sont-ils officiels ?</b> La grille par défaut est celle publiée par la CRSE. Les consommations d'appareils sont des estimations ; vos relevés donnent la vérité.</li>
 <li><b>Faut-il Internet ?</b> Non. Une fois installée, l'appli fonctionne hors ligne.</li>
 <li><b>Mon solde a augmenté sans recharge ?</b> Une recharge a été oubliée ou un chiffre mal saisi : vérifiez l'historique.</li>
@@ -2331,7 +2427,7 @@ en: [
 ['💰 Editing the tariff grid', `<p>Defaults are the official Senelec tariffs (CRSE grids, 1 January 2026). If prices change, edit tiers, VAT, municipal tax, fixed fee and stamp in <b>Settings → Tariff grid</b>, or reset to official prices.</p>`],
 ['💾 Backup and new phone', `<p>Data stays on your phone. Export a backup file regularly. On a new phone: install, request a new activation code, then import your file.</p>`],
 ['📲 Install the app', installHelp],
-['🔑 Activation', `<p>Each phone has a <b>device code</b> (e.g. PL-7KQ2-M9XA). Send it on WhatsApp to ${CONTACT_FMT} to receive your activation code, or scan the seller's QR code.</p><p><b>Free trial:</b> on the activation screen, tap "Start the free trial" to use the app for 24 hours without a code (once per phone). Afterwards an activation code is required; your data is kept.</p>`]
+['🔑 Activation', `<p>Each phone has a <b>device code</b> (e.g. PL-7KQ2-M9XA). Send it on WhatsApp to ${CONTACT_FMT} to receive your activation code, or scan the seller's QR code.</p><p><b>Free trial:</b> on the activation screen, tap "Start the free trial" to use the app for 48 hours without a code (once per phone). Afterwards an activation code is required; your data is kept.</p>`]
 ],
 wo: [
 ['🚀 Tàmbali ci 5 simili', `<ol><li><b>Tànnal sa kontöör</b> ci kaw (📍), def ko tur (Kër, Bitik…).</li>
@@ -2348,7 +2444,7 @@ wo: [
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
 ['📲 Installer appli bi', installHelp],
-['🔑 Activation', `<p>Telefon bu nekk am na <b>code appareil</b> (misaal PL-7KQ2-M9XA). Yónneel ko ci WhatsApp ci ${CONTACT_FMT} ngir jot sa code d'activation.</p><p><b>Essai gratuit :</b> ci écran d'activation bi, bësal « Tàmbali essai gratuit bi » ngir jëfandikoo appli bi 24 waxtu te amul code (benn yoon rekk ci telefon bu nekk). Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.</p>`],
+['🔑 Activation', `<p>Telefon bu nekk am na <b>code appareil</b> (misaal PL-7KQ2-M9XA). Yónneel ko ci WhatsApp ci ${CONTACT_FMT} ngir jot sa code d'activation.</p><p><b>Essai gratuit :</b> ci écran d'activation bi, bësal « Tàmbali essai gratuit bi » ngir jëfandikoo appli bi 48 waxtu te amul code (benn yoon rekk ci telefon bu nekk). Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.</p>`],
 ['ℹ️ Guide bu mat sëkk', `<p>Guide bu mat sëkk bi ci français ak ci anglais la nekk : soppil làkk wi ci Réglages ngir jàng ko.</p>`]
 ]
 };
@@ -2467,11 +2563,11 @@ const I18N = {
 "Essai gratuit : il reste <b>{d}</b>.": "Free trial: <b>{d}</b> left.",
 "Essai gratuit en cours : il reste <b>{d}</b>.": "Free trial running: <b>{d}</b> left.",
 "← Continuer l'essai gratuit": "← Continue the free trial",
-"Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Your 24-hour free trial has ended. Your data is kept: activate {app} to get it back.",
-"Essayez gratuitement pendant 24 h": "Try it free for 24 hours",
+"Votre essai gratuit de 48 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Your 24-hour free trial has ended. Your data is kept: activate {app} to get it back.",
+"Essayez gratuitement pendant 48 h": "Try it free for 48 hours",
 "Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.": "Full access, no payment, no commitment. After that, an activation code is required; your data is kept.",
 "Commencer l'essai gratuit": "Start the free trial",
-"Essai gratuit activé : 24 h pour tout découvrir !": "Free trial started: 24 hours to explore everything!",
+"Essai gratuit activé : 48 h pour tout découvrir !": "Free trial started: 48 hours to explore everything!",
 "Essai gratuit": "Free trial",
 "Temps restant": "Time left",
 "Activer maintenant": "Activate now",
@@ -3118,11 +3214,11 @@ const I18N = {
 "Essai gratuit : il reste <b>{d}</b>.": "Essai gratuit : <b>{d}</b> moo des.",
 "Essai gratuit en cours : il reste <b>{d}</b>.": "Essai gratuit bi ngi dox : <b>{d}</b> moo des.",
 "← Continuer l'essai gratuit": "← Wéyal essai gratuit bi",
-"Votre essai gratuit de 24 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Sa essai gratuit bu 24 waxtu jeex na. Say done dañuy des : dooxal {app} ngir gis leen ci kanam.",
-"Essayez gratuitement pendant 24 h": "Jéemal ko 24 waxtu, te doo fey dara",
+"Votre essai gratuit de 48 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.": "Sa essai gratuit bu 48 waxtu jeex na. Say done dañuy des : dooxal {app} ngir gis leen ci kanam.",
+"Essayez gratuitement pendant 48 h": "Jéemal ko 48 waxtu, te doo fey dara",
 "Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.": "Mën ngaa jëfandikoo lépp te doo fey dara. Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.",
 "Commencer l'essai gratuit": "Tàmbali essai gratuit bi",
-"Essai gratuit activé : 24 h pour tout découvrir !": "Essai gratuit bi tàmbali na : 24 waxtu ngir xam lépp !",
+"Essai gratuit activé : 48 h pour tout découvrir !": "Essai gratuit bi tàmbali na : 48 waxtu ngir xam lépp !",
 "Essai gratuit": "Essai gratuit",
 "Temps restant": "Waxtu wi des",
 "Activer maintenant": "Dooxal ko léegi",

@@ -1,5 +1,5 @@
 /* Power Log — service worker : appli disponible hors ligne, mises à jour automatiques */
-const CACHE = 'power-log-v1.14';
+const CACHE = 'power-log-v1.15';
 const PREFIX = 'power-log-v'; /* les applis Thousand Labs partagent le même domaine : on ne touche qu'à NOS caches */
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './icon-32.png'];
 const OFFLINE = () => new Response(
