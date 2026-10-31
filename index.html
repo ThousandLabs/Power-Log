@@ -767,6 +767,8 @@ function enterTrial(first) {
 document.addEventListener('visibilitychange', () => { if (!document.hidden && trialTimer) trialTick(); });
 const waLink = text => `https://wa.me/${CONTACT}?text=${encodeURIComponent(text)}`;
 
+/* ---------- Thousand Labs : signature avec logo (écran d'activation + licence) ---------- */
+function tlBrand(big){var s=big?40:28;return '<div class="tlbrand" style="display:flex;align-items:center;justify-content:center;gap:10px;margin:16px 0 4px"><svg width="'+s+'" height="'+s+'" viewBox="0 -2 120 120" aria-hidden="true" style="flex-shrink:0"><path d="M20 102 V22 L60 72 L100 22 V102" fill="none" stroke="currentColor" stroke-width="15"/><circle cx="60" cy="44" r="7" fill="#E8A317"/><circle cx="70" cy="27" r="4.5" fill="#E8A317"/></svg><span style="line-height:1.15;text-align:left"><span style="display:block;font-size:12px;opacity:.75">'+t('Une appli de')+'</span><b style="letter-spacing:1.5px">THOUSAND LABS</b></span></div>'+(big?'<p style="text-align:center;margin:4px 0 0;font-size:14px"><a href="https://thousandlabs.github.io/" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">'+t('Découvrir nos autres applis')+'</a></p>':'')}
 function renderLock(err = '') {
   const lic = getLic(), ti = trialInfo();
   document.body.classList.add('locked');
@@ -796,6 +798,7 @@ function renderLock(err = '') {
     </form>
     ${isStandalone() ? '' : `<div class="flex" style="justify-content:center">${installBtn('btn btn-sm')}</div>`}
     <div style="text-align:center"><button class="link-btn" data-action="lock-guide">${t("Découvrir l'application et le guide")}</button></div>
+    ${tlBrand(0)}
     <div class="lock-foot">${PRICE ? PRICE + ' · ' + t('paiement unique') + ' · ' : ''}WhatsApp ${CONTACT_FMT}</div>
   </div></div>`;
 }
@@ -1811,7 +1814,7 @@ views.reglages = () => {
     <div class="flex wrap mt"><button class="btn btn-primary" data-action="export">⬇️ ${t('Exporter mes données')}</button><label class="btn" style="cursor:pointer">⬆️ ${t('Importer')}<input type="file" accept=".json,application/json" data-live="import" hidden></label></div>
     <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoyez-le-vous sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p></div>
   <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span>${LIC_OK ? `<span class="badge b-green">✓ ${t('Activée')}</span>` : `<span class="badge b-amber">🎁 ${t('Essai gratuit')}</span>`}</div>${LIC_OK ? '' : `<div class="kv"><span>${t('Temps restant')}</span><b>${fmtLeft(trialInfo().left)}</b></div>`}<div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${LIC_OK && lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
-    <div class="flex wrap mt">${LIC_OK ? '' : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div></div>
+    <div class="flex wrap mt">${LIC_OK ? '' : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div>${tlBrand(1)}</div>
   <div class="card"><h2>📲 ${t("Installer l'application")}</h2><div class="mt-s">${TLI.html(APP, 'btn btn-primary')}</div><div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
     <h3 class="mt-l">⚠️ ${t('Zone sensible')}</h3><button class="btn btn-sm btn-danger mt-s" data-action="wipe">${t('Tout effacer')}</button><p class="hint mt-s">${t('« Tout effacer » conserve votre activation.')}</p></div>
   </div>
@@ -2491,6 +2494,8 @@ const I18N = {
 "Cliquez sur l'icône d'installation à droite de la barre d'adresse.": "Click the install icon on the right of the address bar.",
 "Comment installer, pas à pas": "How to install, step by step",
 "Site officiel": "Official website",
+"Une appli de": "An app by",
+"Découvrir nos autres applis": "Discover our other apps",
 "Sauvegarde impossible : stockage du navigateur plein ou bloqué.": "Saving failed: browser storage is full or blocked.",
 "{app} est activé. Bienvenue !": "{app} is activated. Welcome!",
 "Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}": "Hello, I would like to get {app}{price}. My device code: {dev}",
@@ -3140,6 +3145,8 @@ const I18N = {
 "Cliquez sur l'icône d'installation à droite de la barre d'adresse.": "Bësal ikon bu installation bi ci ndijooru barre d'adresse bi.",
 "Comment installer, pas à pas": "Naka lañuy installer, pas ak pas",
 "Site officiel": "Site officiel",
+"Une appli de": "Appli bu",
+"Découvrir nos autres applis": "Xoolal sunuy yeneen appli",
 "Sauvegarde impossible : stockage du navigateur plein ou bloqué.": "Denc gi antuwul : barab bi ci navigateur bi fees na walla dañu ko tëj.",
 "{app} est activé. Bienvenue !": "{app} dox na. Dalal ak jàmm !",
 "Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}": "Salaam aleekum, dama bëgg jënd {app}{price}. Sama code appareil : {dev}",
