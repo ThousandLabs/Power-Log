@@ -492,7 +492,7 @@ function defaults() {
 function load() {
   try {
     const raw = localStorage.getItem(KEY); if (!raw) return defaults();
-    const d = JSON.parse(raw), base = defaults();
+    const d = cleanData(JSON.parse(raw)), base = defaults();
     const out = Object.assign(base, d);
     out.settings = Object.assign(base.settings, d.settings || {});
     out.settings.profiles = Object.assign(clone(OFFICIAL), out.settings.profiles || {});
@@ -711,9 +711,20 @@ const PL_PUB = {"kty":"EC","crv":"P-256","x":"VIGa7LpUHEjrqTlXxAtGGkGWJXe-8MaBBf
 const LEGACY_CODES=[];
 async function legacyOk(id,c){try{if(!LEGACY_CODES.length)return false;const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(id+':'+c));const h=Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('');return LEGACY_CODES.includes(h)}catch(e){return false}}
 
+
+/* ---------- 🛡️ Nettoyage des données entrantes (sauvegarde, synchro, import, démarrage) ----------
+   Les champs techniques (identifiants, dates, moyens de paiement, devise…) ne gardent que des caractères
+   inoffensifs ; dans les textes libres, < > " ` sont remplacés par des signes équivalents.
+   Ainsi, un fichier ou une synchro piégés ne peuvent jamais exécuter de code dans l'appli. */
+function cleanData(o){
+  const T=/^(id|[a-z]*Id|by|date|[a-z]*Date|day|month|method|currency|kind|type|status|cat|category|unit|mode|role|period|freq|dev|ws)$/;
+  const R={'<':'‹','>':'›','"':'”','`':'ʼ'};
+  const s=(k,v)=>T.test(k)?v.replace(/[^\p{L}\p{N}\s_.:,+\-\/€$£¥%#@]/gu,''):v.replace(/[<>"`]/g,c=>R[c]);
+  const w=(v,k)=>typeof v==='string'?s(k,v):Array.isArray(v)?v.map(x=>w(x,k)):(v&&typeof v==='object')?Object.fromEntries(Object.entries(v).filter(([kk])=>!/[<>"`]/.test(kk)).map(([kk,x])=>[kk,w(x,kk)])):v;
+  try{return w(o,'')}catch(e){return o}}
 function getLic() {
   let lic = {};
-  try { lic = JSON.parse(localStorage.getItem(LIC_KEY)) || {}; } catch (e) {}
+  try { lic = cleanData(JSON.parse(localStorage.getItem(LIC_KEY))) || {}; } catch (e) {}
   if (!lic.dev) {
     const rnd = () => { let x = ''; const a = new Uint32Array(4); try { crypto.getRandomValues(a); } catch (e) { for (let i = 0; i < 4; i++) a[i] = Math.random() * 1e9; } for (let i = 0; i < 4; i++) x += ALPHA[a[i] % ALPHA.length]; return x; };
     lic = {dev: `PL-${rnd()}-${rnd()}`};
@@ -1020,7 +1031,7 @@ const QR=(()=>{
 
 /* Lecteur : BarcodeDetector (Android/Chrome) sinon jsQR chargé à la demande (puis gardé hors ligne) */
 let scanStream=null,scanTimer=null;
-function loadJsQR(){return new Promise((ok,ko)=>{if(window.jsQR)return ok();const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';s.onload=()=>window.jsQR?ok():ko();s.onerror=ko;document.head.appendChild(s)})}
+function loadJsQR(){return new Promise((ok,ko)=>{if(window.jsQR)return ok();const s=document.createElement('script');s.src='./jsQR.js';/* jsQR 1.4.0 (github.com/cozmo/jsQR), hébergé avec l'appli : aucun script externe */s.onload=()=>window.jsQR?ok():ko();s.onerror=ko;document.head.appendChild(s)})}
 async function startScan(video,status,onText){
   stopScan();
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){status.textContent='📵 Caméra non disponible ici. Ouvrez l\'appli installée (site en https).';return}
@@ -2290,7 +2301,7 @@ const live = {
   import: async el => {
     const file = el.files && el.files[0]; if (!file) return;
     try {
-      const o = JSON.parse(await file.text()); const d = o && o.app === 'power-log' ? o.data : o;
+      const o = cleanData(JSON.parse(await file.text())); const d = o && o.app === 'power-log' ? o.data : o;
       if (!d || !d.meters || !d.settings) throw 0;
       // Essai gratuit : pas de sauvegarde venant d'un autre appareil (sinon on pourrait enchaîner les essais)
       if (!LIC_OK && !(o && o.dev && o.dev === getLic().dev)) { el.value = ''; return alert(t("Pendant l'essai gratuit, seules les sauvegardes faites sur ce téléphone peuvent être importées. Activez {app} pour récupérer une sauvegarde d'un autre appareil.", {app: APP})); }
