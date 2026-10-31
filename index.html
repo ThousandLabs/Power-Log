@@ -7,9 +7,9 @@
 <meta name="description" content="Power Log — comprendre et réduire sa consommation d'électricité (Woyofal / Senelec), 100 % hors ligne.">
 <title>Power Log</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png?v=tl2">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=tl2">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=tl2">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -81,7 +81,7 @@ b,strong{font-weight:700}
 .app{display:flex;min-height:100vh}
 .sidebar{display:none;position:sticky;top:0;height:100vh;width:250px;flex-shrink:0;flex-direction:column;gap:2px;padding:20px 14px;background:var(--surface);border-right:1px solid var(--border);overflow-y:auto}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;padding:4px 10px 16px;letter-spacing:-.02em}
-.brand-logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#f59e0b,#c2410c);display:grid;place-items:center;color:#fff;flex-shrink:0}
+.brand-logo{width:36px;height:36px;border-radius:11px;background:#16233F;display:grid;place-items:center;color:#fff;flex-shrink:0}
 .nav-btn{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:11px;color:var(--muted);font-weight:600;font-size:14px;text-align:left;width:100%}
 .nav-btn:hover{background:var(--surface2);color:var(--text)}
 .nav-btn.active{background:var(--primary-soft);color:var(--primary)}
@@ -911,7 +911,7 @@ function renderLock(err = '') {
       : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 48 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
   const msg = t('Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}', {app: APP, price: PRICE ? ' (' + PRICE + ')' : '', dev: lic.dev});
   $('#lock').innerHTML = `<div class="lock-wrap"><div class="lock-card ${err ? 'shake' : ''}">
-    <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${icon('bolt', 20)}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
+    <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${BRANDMARK}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
       <div class="lang-row">${Object.keys(LANGS).map(k => `<button class="chip ${lang() === k ? 'on' : ''}" data-action="lock-lang" data-id="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
     <div><h1 class="lock-title">${t('Activez votre application')}</h1><p class="sub mt-s">${t('{app} fonctionne avec un code d\'accès personnel, lié à cet appareil.', {app: APP})}</p></div>
     ${trialHtml}
@@ -1324,6 +1324,7 @@ function setScanWatts(w) {
 /* =========================================================================
    10. INTERFACE : icônes, champs, modale, toasts, navigation, graphiques
    ========================================================================= */
+const BRANDMARK = '<svg viewBox="14 14 72 72" width="26" height="26" aria-hidden="true"><path d="M20 60A30 30 0 0 1 80 60" fill="none" stroke="#FF9248" stroke-width="6" stroke-linecap="round"/><circle cx="80" cy="60" r="5" fill="#F2B33D"/><path d="M54 34L41 55h10l-5 19 15-25H51z" fill="#FF9248" stroke="#FF9248" stroke-width="2" stroke-linejoin="round"/></svg>';
 const ICONS = {
   bolt: '<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2z" fill="currentColor" stroke="none"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -1395,7 +1396,7 @@ const VIEWS = [
 ];
 const state = {view: 'home', appSort: 'kwh', statsYM: curYM(), shareYM: curYM(), calc: {amount: 5000, when: 'now'}, det: {step: 0}};
 function buildNav() {
-  $('#brand-logo').innerHTML = icon('bolt', 20);
+  $('#brand-logo').innerHTML = BRANDMARK;
   $('#modal-close').innerHTML = icon('x', 18);
   $('#side-install').innerHTML = installBtn('btn btn-sm btn-block');
   $('#side-theme').textContent = t('Changer de thème');

@@ -1,7 +1,7 @@
 /* Power Log — service worker : appli disponible hors ligne, mises à jour automatiques */
-const CACHE = 'power-log-v1.19';
+const CACHE = 'power-log-v1.20';
 const PREFIX = 'power-log-v'; /* les applis Thousand Labs partagent le même domaine : on ne touche qu'à NOS caches */
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './icon-32.png'];
+const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png?v=tl2', './icon-512.png?v=tl2', './apple-touch-icon.png?v=tl2', './icon-32.png?v=tl2'];
 const OFFLINE = () => new Response(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:sans-serif;padding:24px;text-align:center"><h2>Hors ligne</h2><p>Ouvrez l\'appli une fois avec une connexion pour l\'activer hors ligne, puis réessayez.</p></body>',
         { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
