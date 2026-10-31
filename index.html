@@ -706,7 +706,11 @@ const SITE_URL = 'https://thousandlabs.github.io/Power-Log/';   // lien officiel
 const PRICE = '5\u00a0000\u00a0F';
 const LIC_KEY = 'powerlog_licence';
 const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const PL_PUB = {"kty":"EC","crv":"P-256","x":"Nmq3G5g-Kt2bKI9uLLDtm_mXb_4zFb_M4VEt1gLSaas","y":"c4jgrKhZ0yxPbji5teUScN7R-BewApsW0C982UQ3ymw"};
+const PL_PUB = {"kty":"EC","crv":"P-256","x":"VIGa7LpUHEjrqTlXxAtGGkGWJXe-8MaBBfAT2F8YtRI","y":"AMVjEpSsyPmpFYd-smIUXbtBhhpM0z4BW7GzQiJDXgo"};
+  /* Codes déjà donnés avec l'ancienne clé (retirée) : seuls ces codes exacts restent valables. */
+const LEGACY_CODES=[];
+async function legacyOk(id,c){try{if(!LEGACY_CODES.length)return false;const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(id+':'+c));const h=Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('');return LEGACY_CODES.includes(h)}catch(e){return false}}
+
 function getLic() {
   let lic = {};
   try { lic = JSON.parse(localStorage.getItem(LIC_KEY)) || {}; } catch (e) {}
@@ -723,6 +727,7 @@ function unb64u(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.lengt
 async function checkSig(sig) {
   try {
     const c = sigOf(sig); if (!c || !(window.crypto && crypto.subtle)) return false;
+      if (await legacyOk(getLic().dev, c)) return true;
     const k = await crypto.subtle.importKey('jwk', PL_PUB, {name: 'ECDSA', namedCurve: 'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name: 'ECDSA', hash: 'SHA-256'}, k, unb64u(c), new TextEncoder().encode(getLic().dev));
   } catch (e) { return false; }
