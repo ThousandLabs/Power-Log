@@ -901,26 +901,26 @@ var TLBUY=(function(){
   return {init:init,html:html,pick:pick,qty:qty,meth:meth,cpy:cpy,send:send,redraw:redraw}
 })();
 
+
+/* ---------- Thousand Labs : écran de bienvenue (avant l'essai) ---------- */
+let TLW_FULL=false;
+(function(){try{const st=document.createElement('style');st.textContent=".tlw{max-width:460px;margin:0 auto;min-height:100vh;background:#f5f7fc;color:#0e1631;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;display:flex;flex-direction:column}.tlw-hero{background:#16233f;color:#fff;padding:22px 22px 80px;border-radius:0 0 26px 26px}.tlw-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.tlw-ap{display:flex;align-items:center;gap:10px}.tlw-ap img{width:38px;height:38px;border-radius:10px}.tlw-ap b{display:block;font-size:17px;line-height:1.2}.tlw-ap small{display:block;font-size:12px;color:#b9c3e6}.tlw h1{font-size:30px;line-height:1.15;letter-spacing:-.5px;margin:26px 0 10px;color:#fff}.tlw-hero p{margin:0;color:#c9d1ee;font-size:15px;line-height:1.5}.tlw-prev{margin:-60px 18px 0;background:#fff;border:1px solid #e3e8f2;border-radius:18px;padding:16px;box-shadow:0 10px 30px rgba(16,26,61,.16);position:relative;font-size:13px}.tlw-ph{display:flex;justify-content:space-between;font-size:12px;font-weight:600;color:#4a5468}.tlw-big{font-size:24px;font-weight:800;margin:4px 0 10px;letter-spacing:-.3px}.tlw-row{display:flex;align-items:center;gap:10px;margin-top:9px}.tlw-row span{flex:1}.tlw-row b{font-size:13px}.tlw-bar{height:6px;border-radius:6px;background:#e8ecf4;margin-top:4px}.tlw-bar i{display:block;height:6px;border-radius:6px;background:var(--tlw)}.tlw-av{width:28px;height:28px;border-radius:50%;background:#e8ecf4;display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}.tlw-tip{margin-top:10px;padding:9px 11px;border-radius:12px;background:#fff6e8;color:#7a4508;font-weight:600;font-size:12.5px}.tlw-feats{padding:20px 22px 0;display:flex;flex-direction:column;gap:14px}.tlw-f{display:flex;gap:12px;align-items:center}.tlw-f i{width:40px;height:40px;border-radius:12px;background:#e9edf8;color:var(--tlw);display:grid;place-items:center;flex:none;font-style:normal}.tlw-f b{display:block;font-size:15px}.tlw-f small{color:#4a5468;font-size:13px}.tlw-cta{padding:22px 22px 10px;margin-top:auto}.tlw-btn{width:100%;min-height:54px;border:0;border-radius:14px;background:var(--tlw);color:#fff;font:700 17px system-ui,sans-serif;cursor:pointer}.tlw-sub{text-align:center;font-size:13.5px;color:#4a5468;margin:8px 0 0}.tlw-sub button{background:none;border:0;color:var(--tlw);font:700 13.5px system-ui,sans-serif;cursor:pointer;padding:8px 4px}.tlw-sw{padding:4px 22px 26px}.tlw-top .chip{background:transparent;color:#fff;border:1px solid #3a4878;min-width:38px;height:32px;padding:0 10px;border-radius:99px;font-weight:700}.tlw-top .chip.on{background:#fff;color:#16233f;border-color:#fff}.tlw-top .lang-row{display:flex;gap:6px}";document.head.appendChild(st)}catch(e){}})();
+function tlwHTML(c){return '<div class="tlw" style="--tlw:'+c.accent+'"><div class="tlw-hero"><div class="tlw-top"><div class="tlw-ap"><img src="'+c.icon+'" alt=""><div><b>'+c.name+'</b><small>'+c.by+'</small></div></div>'+(c.top||'')+'</div>'+'<h1>'+c.l1+'<br>'+c.l2+'</h1><p>'+c.sub+'</p></div><div class="tlw-prev" aria-hidden="true">'+c.prev+'</div><div class="tlw-feats">'+c.feats.map(f=>'<div class="tlw-f"><i>'+f[0]+'</i><div><b>'+f[1]+'</b><small>'+f[2]+'</small></div></div>').join('')+'</div>'+'<div class="tlw-cta"><button type="button" class="tlw-btn" data-action="'+c.start+'">'+c.cta+'</button><p class="tlw-sub">'+c.price+' · <button type="button" data-action="'+c.full+'">'+c.have+'</button></p></div><div class="tlw-sw">'+(c.sw||'')+'</div></div>'}
 function renderLock(err = '') {
   const lic = getLic(), ti = trialInfo();
   document.body.classList.add('locked');
+  if (!ti.started && !LIC_OK && !TLW_FULL) { $('#lock').innerHTML = tlwHTML({accent:'#c2410c',icon:'icon-192.png?v=tl2',name:APP,by:t('par') + ' ' + TEAM,top:'<div class="lang-row">' + Object.keys(LANGS).map(k => `<button class="chip ${lang() === k ? 'on' : ''}" data-action="lock-lang" data-id="${k}">${k.toUpperCase()}</button>`).join('') + '</div>',l1:t('Comprenez votre électricité.'),l2:t('Payez moins.'),sub:t('Le carnet de bord de votre compteur Woyofal, simple et 100 % hors ligne.'),prev:'<div class="tlw-ph"><span>' + t('Compteur maison') + '</span><span>' + t('Exemple') + '</span></div><div class="tlw-big">' + t('≈ 9 jours restants') + '</div><div class="tlw-row"><span><b>' + t('Crédit restant') + '</b><div class="tlw-bar"><i style="width:38%"></i></div></span><b>46 kWh</b></div><div class="tlw-row"><span><b>' + t('Clim du salon') + '</b><div class="tlw-bar"><i style="width:64%"></i></div></span><b>' + t('64 % de la conso') + '</b></div><div class="tlw-tip">' + t('Conseil : attendez le 1er du mois pour recharger.') + '</div>',feats:[[ '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 14l4-4"/><path d="M3.5 18a10 10 0 1 1 17 0"/></svg>', t('Tranches Senelec expliquées'), t('Le vrai prix de votre prochain kWh')],['<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7ZM12 17v5"/></svg>', t('Qui consomme quoi ?'), t('Le coût de chaque appareil, par jour et par mois')],['<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>', t('Conseil de recharge'), t('Quand recharger, et combien')]],cta:t('Essayer gratuitement 48 h'),start:'trial-start',price:t('Puis 5 000 F, une seule fois'),have:t('J’ai déjà un code'),full:'lock-full'}); return; }
   const trialHtml = ti.active
     ? `<div class="alert alert-amber"><span class="a-ic">🎁</span><span>${t('Essai gratuit en cours : il reste <b>{d}</b>.', {d: fmtLeft(ti.left)})}</span></div><button type="button" class="btn btn-block" data-action="trial-back">${t("← Continuer l'essai gratuit")}</button>`
     : ti.started
-      ? `<div class="alert alert-amber"><span class="a-ic">⏳</span><span>${t('Votre essai gratuit de 48 h est terminé. Vos données sont conservées : activez {app} pour les retrouver.', {app: APP})}</span></div>`
+      ? ''
       : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 48 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
   const msg = t('Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}', {app: APP, price: PRICE ? ' (' + PRICE + ')' : '', dev: lic.dev});
   $('#lock').innerHTML = `<div class="lock-wrap"><div class="lock-card ${err ? 'shake' : ''}">
     <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${BRANDMARK}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
       <div class="lang-row">${Object.keys(LANGS).map(k => `<button class="chip ${lang() === k ? 'on' : ''}" data-action="lock-lang" data-id="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
-    <div><h1 class="lock-title">${t('Activez votre application')}</h1><p class="sub mt-s">${t('{app} fonctionne avec un code d\'accès personnel, lié à cet appareil.', {app: APP})}</p></div>
+    <div>${ti.started && !ti.active ? `<h1 class="lock-title">${t('Gardez {app}', {app: APP})}</h1><p class="sub mt-s">${t('Votre essai de 48 h est terminé. Vos données sont conservées : activez l\'appli pour les retrouver.')}</p>` : `<h1 class="lock-title">${t('Activer {app}', {app: APP})}</h1><p class="sub mt-s">${t('Une seule fois, sans abonnement. Le code est lié à ce téléphone.')}</p>`}</div>
     ${trialHtml}
-    <div class="steps">
-      <div class="step"><span class="n">1</span><span>${t('Copiez votre <b>code appareil</b> ci-dessous.')}</span></div>
-      <div class="step"><span class="n">2</span><span>${PRICE ? t('Envoyez-le sur WhatsApp et réglez <b>{price}</b> (paiement unique).', {price: PRICE}) : t('Envoyez-le sur WhatsApp pour recevoir votre code.')}</span></div>
-      <div class="step"><span class="n">3</span><span>${t('Saisissez le <b>code d\'activation</b> reçu. C\'est tout !')}</span></div>
-    </div>
-    <div class="dev-box"><span class="label">${t('Votre code appareil')}</span><div class="dev-id">${lic.dev}</div><div class="flex" style="gap:8px;justify-content:center"><button class="btn btn-sm" data-action="lock-copy">${t('Copier')}</button><button class="btn btn-sm" data-action="lock-qr">🔳 QR</button></div></div>
     ${(TLBUY.init({app:"Power Log",vous:true,unitWord:"appareil",unit:5000,dev:function(){return lic.dev},lang:function(){return lang()}}),TLBUY.html())}
     <form data-form="activate" class="stack" autocomplete="off">
       ${field(t("Code d'activation"), `<textarea class="input code-area" name="code" rows="3" placeholder="${esc(t('Collez ici le code reçu (tout le texte)'))}" autocomplete="off" spellcheck="false" required></textarea>`)}
@@ -928,6 +928,8 @@ function renderLock(err = '') {
       <button class="btn btn-primary btn-block">${t('Activer {app}', {app: APP})}</button>
       <button type="button" class="btn btn-block" data-action="lock-scan">📷 ${t('Scanner le code du vendeur')}</button>
     </form>
+    <div class="dev-box"><span class="label">${t('Code de ce téléphone')}</span><div class="dev-id">${lic.dev}</div><div class="flex" style="gap:8px;justify-content:center"><button class="btn btn-sm" data-action="lock-copy">${t('Copier')}</button><button class="btn btn-sm" data-action="lock-qr">${t('QR code')}</button></div><span class="hint">${t('Vous avez acheté auprès d\'un vendeur ? Envoyez-lui ce code.')}</span></div>
+    ${!ti.started ? `<div style="text-align:center"><button class="link-btn" data-action="lock-welcome">${t('← Retour à la présentation')}</button></div>` : ''}
     ${isStandalone() ? '' : `<div class="flex" style="justify-content:center">${installBtn('btn btn-sm')}</div>`}
     <div style="text-align:center"><button class="link-btn" data-action="lock-guide">${t("Découvrir l'application et le guide")}</button></div>
     ${tlBrand(0)}
@@ -2170,6 +2172,8 @@ const actions = {
       else { const st = $('#scanS'); if (st) st.textContent = '❌ ' + t('Ce code ne correspond pas à cet appareil'); }
     });
   },
+  'lock-full': () => { TLW_FULL = true; renderLock(); scrollTo(0, 0); },
+  'lock-welcome': () => { TLW_FULL = false; renderLock(); scrollTo(0, 0); },
   'trial-start': () => { const lic = getLic(); if (lic.trial) return renderLock(); lic.trial = lic.seen = Date.now(); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} tlHeal(true); enterTrial(true); },
   'trial-back': () => { if (trialInfo().active) enterTrial(false); else renderLock(); },
   'trial-buy': () => { closeModal(); renderLock(); window.scrollTo(0, 0); },
@@ -2548,6 +2552,32 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Compteur maison": "Home meter",
+"Exemple": "Example",
+"≈ 9 jours restants": "≈ 9 days left",
+"Crédit restant": "Credit left",
+"Clim du salon": "Living-room AC",
+"64 % de la conso": "64% of usage",
+"Conseil : attendez le 1er du mois pour recharger.": "Tip: wait for the 1st of the month to top up.",
+"Comprenez votre électricité.": "Understand your electricity.",
+"Payez moins.": "Pay less.",
+"Le carnet de bord de votre compteur Woyofal, simple et 100 % hors ligne.": "The logbook for your Woyofal meter, simple and 100% offline.",
+"Tranches Senelec expliquées": "Senelec tiers explained",
+"Le vrai prix de votre prochain kWh": "The real price of your next kWh",
+"Qui consomme quoi ?": "What uses what?",
+"Le coût de chaque appareil, par jour et par mois": "Each appliance's cost, per day and per month",
+"Quand recharger, et combien": "When to top up, and how much",
+"Essayer gratuitement 48 h": "Try free for 48 h",
+"Puis 5 000 F, une seule fois": "Then 5,000 F, one time",
+"J’ai déjà un code": "I already have a code",
+"Gardez {app}": "Keep {app}",
+"Activer {app}": "Activate {app}",
+"Votre essai de 48 h est terminé. Vos données sont conservées : activez l'appli pour les retrouver.": "Your 48-hour trial is over. Your data is kept: activate the app to get it back.",
+"Une seule fois, sans abonnement. Le code est lié à ce téléphone.": "One-time, no subscription. The code is tied to this phone.",
+"Code de ce téléphone": "This phone's code",
+"QR code": "QR code",
+"Vous avez acheté auprès d'un vendeur ? Envoyez-lui ce code.": "Bought from a seller? Send them this code.",
+"← Retour à la présentation": "← Back to the overview",
 "Fermer": "Close",
 "Conseil de recharge": "Top-up advice",
 "Notez le solde de votre compteur (et ajoutez vos appareils) : l'appli vous dira quand recharger et combien.": "Note your meter balance (and add your appliances): the app will tell you when to top up and how much.",
