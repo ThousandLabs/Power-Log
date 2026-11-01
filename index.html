@@ -367,6 +367,9 @@ const dtstr = d => `${dstr(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const today = () => dstr(new Date());
 const nowLocal = () => dtstr(new Date());
 const ymOf = s => String(s).slice(0, 7);
+// Heure de fin de journée (ex : 5 → ce qui est consommé entre minuit et 5 h compte pour la veille)
+const dayOff = () => clamp(num(typeof D !== 'undefined' && D && D.settings ? D.settings.dayEnd : 0), 0, 12) * 3600000;
+const logDay = (ts = Date.now()) => dstr(new Date(ts - dayOff()));
 const curYM = () => today().slice(0, 7);
 const parseDT = s => { const [d, t] = String(s).split('T'); const [y, m, dd] = d.split('-').map(Number); const [hh, mi] = (t || '12:00').split(':').map(Number); return new Date(y, m - 1, dd, hh || 0, mi || 0).getTime(); };
 const DAY = 86400000;
@@ -438,7 +441,7 @@ const REF = [
   {k: 'tv_old', e: '📺', n: 'Télévision cathodique / plasma', w: 150, h: 6, duty: 1, sb: 4, cat: 'ecran'},
   {k: 'deco', e: '📡', n: 'Décodeur (TNT, satellite, Canal+)', w: 15, h: 6, duty: 1, sb: 9, cat: 'ecran'},
   {k: 'box', e: '🛜', n: 'Box internet / routeur Wi-Fi', w: 10, h: 24, duty: 1, sb: 0, cat: 'ecran'},
-  {k: 'console', e: '🎮', n: 'Console de jeux', w: 120, h: 2, duty: 1, sb: 8, cat: 'ecran'},
+  {k: 'console', e: '🎮', n: 'Console de jeux (PS5, Xbox…)', w: 200, h: 2, duty: 1, sb: 8, cat: 'ecran'},
   {k: 'sono', e: '🔊', n: 'Radio / sono / home cinéma', w: 30, h: 3, duty: 1, sb: 4, cat: 'ecran'},
   {k: 'laptop', e: '💻', n: 'Ordinateur portable', w: 50, h: 5, duty: 1, sb: 1, cat: 'bureau'},
   {k: 'pc', e: '🖥️', n: 'Ordinateur fixe + écran', w: 150, h: 4, duty: 1, sb: 3, cat: 'bureau'},
@@ -620,15 +623,29 @@ function consumption(mid = meter().id) {
     iv.push({t1: a.t, t2: b.t, days, kwh: Math.max(0, kwh), rate: Math.max(0, kwh) / days});
   }
   // Répartition jour par jour
-  const daily = {}, cover = {};
-  iv.forEach(x => {
-    let t = x.t1;
-    while (t < x.t2 - 1) {
-      const d = new Date(t), end = Math.min(x.t2, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime());
-      const k = dstr(d), frac = (end - t) / DAY;
-      daily[k] = (daily[k] || 0) + x.rate * frac; cover[k] = (cover[k] || 0) + frac;
+  const daily = {}, cover = {}, off = dayOff(), parts = [];
+  iv.forEach((x, n) => {
+    let t = x.t1 - off; const t2 = x.t2 - off;
+    while (t < t2 - 1) {
+      const d = new Date(t), end = Math.min(t2, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime());
+      const k = dstr(d), frac = (end - t) / DAY, v = x.rate * frac;
+      daily[k] = (daily[k] || 0) + v; cover[k] = (cover[k] || 0) + frac; parts.push({n, k, v});
       t = end;
     }
+  });
+  // Corrections manuelles (journal) : le jour prend la valeur saisie, l'écart est reporté
+  // sur les autres jours des mêmes intervalles, pour que le total du compteur reste juste.
+  const fixes = {}, auto = {};
+  (D.journal || []).filter(j => j.meterId === mid && j.fix !== '' && j.fix != null && isFinite(+j.fix)).forEach(j => { fixes[j.day] = Math.max(0, +j.fix); });
+  Object.entries(fixes).forEach(([d, fix]) => {
+    if (daily[d] == null) return;
+    auto[d] = daily[d];
+    let delta = daily[d] - fix;
+    const ivs = new Set(parts.filter(p => p.k === d).map(p => p.n));
+    const others = parts.filter(p => ivs.has(p.n) && p.k !== d && fixes[p.k] == null);
+    const tot = sum(others, p => p.v);
+    if (tot > 0) others.forEach(p => { daily[p.k] = Math.max(0, daily[p.k] + delta * p.v / tot); });
+    daily[d] = fix; cover[d] = Math.max(cover[d] || 0, 1);
   });
   const rates = iv.filter(x => x.days >= .4).map(x => x.rate).sort((a, b) => a - b);
   const median = rates.length ? rates[Math.floor(rates.length / 2)] : 0;
@@ -636,7 +653,7 @@ function consumption(mid = meter().id) {
   const avgOver = days => { const from = Date.now() - days * DAY; let k = 0, d = 0; iv.forEach(x => { const a = Math.max(x.t1, from), b = x.t2; if (b > a) { const f = (b - a) / (x.t2 - x.t1); k += x.kwh * f; d += (b - a) / DAY; } }); return d >= .5 ? {avg: k / d, days: d} : null; };
   const avgReal = avgOver(14) || avgOver(45) || avgOver(400);
   const last = ev[ev.length - 1] || null;
-  return {ev, iv, daily, cover, median, anomalies, issues, avgReal, last};
+  return {ev, iv, daily, cover, median, anomalies, issues, avgReal, last, fixes, auto};
 }
 // Estimation théorique d'un appareil (kWh/jour)
 function appKwhDay(a) {
@@ -716,7 +733,7 @@ const isSpecial = j => !!(j && ((j.tags || []).length || num(j.cut) > 0));
 
 /* Profil de la semaine (12 dernières semaines, jours complets seulement) */
 function weekProfile(mid = meter().id, C = consumption(mid)) {
-  const from = dstr(new Date(Date.now() - 84 * DAY)), td = today();
+  const from = logDay(Date.now() - 84 * DAY), td = logDay();
   const days = Object.keys(C.daily).filter(d => d >= from && d < td && (C.cover[d] || 0) >= .8);
   const wd = [...Array(7)].map(() => []), all = [], tagged = {};
   days.forEach(d => {
@@ -755,7 +772,7 @@ function forecast(S, prof) {
   if (S.solde == null || !prof.usable) return out;
   let left = S.solde, t = Date.now(), n = 0, total = 0;
   while (n < 62) {
-    const d = new Date(t), day = dstr(d), end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+    const off = dayOff(), d = new Date(t - off), day = dstr(d), end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() + off;
     const frac = (end - t) / DAY, k = expectedDay(day, prof, S.avg, S.m.id), use = k * frac;
     if (n < 7) out.days.push({day, k, use, left: Math.max(0, left - use), special: isSpecial(journalDay(day, S.m.id))});
     if (out.daysLeft == null && use > 0 && left - use <= 0) { const f = left / use * frac; out.daysLeft = total + f; out.runOut = t + f * DAY; }
@@ -1604,7 +1621,7 @@ function reminders(S) {
   }
   const soon = journalOf().filter(j => j.day > today() && j.day <= dstr(new Date(Date.now() + 3 * DAY)) && (j.tags || []).some(k => k === 'plus' || k === 'invites'));
   if (soon.length && S.prof) { const j = soon[soon.length - 1], k = expectedDay(j.day, S.prof, S.avg), base = S.prof.W[wdOf(j.day)].n ? S.prof.W[wdOf(j.day)].avg : (S.prof.normal || S.avg); add('plan', 'blue', '🏷️', t('<b>{d}</b> : journée chargée prévue (≈ {k}, soit {f}). Vérifiez que votre crédit suffit.', {d: dayName(j.day), k: K(k), f: F(k * S.price)}) + (k > base * 1.05 ? ' ' + t('C\'est environ {x} de plus qu\'un jour normal.', {x: F((k - base) * S.price)}) : '')); }
-  if (journalOf().length && !journalDay(today()) && new Date().getHours() >= 18) add('jday', 'green', '📝', t('Une journée particulière aujourd\'hui (machine à laver, quelqu\'un en plus, coupure…) ? <b>Notez-la</b> dans le journal.') + ` <button class="btn btn-sm mt-s" data-action="add-journal">📝 ${t('Noter ma journée')}</button>`);
+  if (journalOf().length && !journalDay(logDay()) && new Date().getHours() >= 18) add('jday', 'green', '📝', t('Une journée particulière aujourd\'hui (machine à laver, quelqu\'un en plus, coupure…) ? <b>Notez-la</b> dans le journal.') + ` <button class="btn btn-sm mt-s" data-action="add-journal">📝 ${t('Noter ma journée')}</button>`);
   const hasData = D.recharges.length + D.readings.length + D.appliances.length > 0;
   if (hasData && Date.now() - (D.settings.lastBackup || 0) > 7 * DAY) add('backup', 'amber', '💾', t('Pensez à <b>sauvegarder vos données</b> (Réglages → Exporter). Sans sauvegarde, vider le navigateur efface tout.') + ` <button class="btn btn-sm btn-primary mt-s" data-action="export">💾 ${t('Exporter mes données')}</button>`);
   return out;
@@ -2026,12 +2043,13 @@ views.stats = () => {
 
 /* --- Journal du jour --- */
 function journalForm(j = {}) {
-  const day = j.day || today(), apps = appsOf(), tags = j.tags || [], uses = Object.fromEntries((j.uses || []).map(u => [u.appId, u]));
+  const day = j.day || logDay(), apps = appsOf(), tags = j.tags || [], uses = Object.fromEntries((j.uses || []).map(u => [u.appId, u]));
   const rows = apps.length ? apps.map(a => { const u = uses[a.id] || {}, per = isPerUse(a); return `<div class="li"><div class="li-ic">${refOf(a.type).e}</div><div class="g"><b>${esc(appName(a))}${num(a.qty) > 1 ? ' ×' + num(a.qty) : ''}</b><small>${per ? t('nombre de fois') : (num(a.qty) > 1 ? t('heures (pour les {n})', {n: num(a.qty)}) : t('heures'))}</small></div><input class="input" style="max-width:86px;text-align:center" name="${per ? 'n_' : 'h_'}${a.id}" value="${esc(per ? (u.n ?? '') : (u.h ?? ''))}" inputmode="decimal" placeholder="${per ? '0' : '0 h'}" oninput="jPreview(this.form)"></div>`; }).join('') : empty(t('Ajoutez d\'abord vos appareils dans « Mes appareils ».'));
   return `<form class="stack" data-form="journal"><input type="hidden" name="id" value="${esc(j.id || '')}">
     ${field(t('Jour'), `<input class="input" type="date" name="day" value="${esc(day)}" required>`, t('Vous pouvez aussi noter un jour à venir (ex : papa arrive samedi) : la prévision en tiendra compte.'))}
     <div><span class="label">${t('Ce jour-là…')}</span><div class="chips mt-s">${DAY_TAGS.map(x => `<label class="chip ${tags.includes(x.k) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" name="tag_${x.k}" ${tags.includes(x.k) ? 'checked' : ''} style="display:none" onchange="this.parentNode.classList.toggle('on',this.checked)">${x.e} ${t(x.l)}</label>`).join('')}</div></div>
     ${field(t('Coupure de courant (heures, facultatif)'), numInp('cut', j.cut || '', 'placeholder="0"'))}
+    ${(() => { const C = consumption(), a = C.auto[day] != null ? C.auto[day] : ((C.cover[day] || 0) > 0 ? C.daily[day] : null); return field(t('Consommation réelle de ce jour (kWh, correction)'), numInp('fix', j.fix ?? '', `placeholder="${a != null ? esc(nf(a, 2)) : '—'}"`), a != null ? t('Calculé par l\'appli : {k}. Si vous connaissez le vrai chiffre (ex : relevés le soir et le lendemain soir), saisissez-le : l\'écart est reporté sur les jours voisins. Laissez vide pour garder le calcul.', {k: K(a)}) : t('Laissez vide : l\'appli calcule ce jour à partir de vos relevés.')); })()}
     <div><span class="label">${t('Appareils utilisés (facultatif)')}</span><p class="hint">${t('Notez seulement ceux qui changent d\'un jour à l\'autre : machine à laver, clim, fer, ordinateur…')}</p><div class="list mt-s">${rows}</div><p class="hint mt-s" id="jEst"></p></div>
     ${field(t('Note (facultatif)'), inp('note', j.note || '', 'maxlength="80"'))}
     <button class="btn btn-primary btn-block">${t('Enregistrer')}</button>
@@ -2041,14 +2059,14 @@ function journalForm(j = {}) {
 function journalFromForm(el) {
   const fd = Object.fromEntries(new FormData(el)), uses = [];
   appsOf().forEach(a => { const per = isPerUse(a), v = num(fd[(per ? 'n_' : 'h_') + a.id]); if (v > 0) uses.push(per ? {appId: a.id, n: v} : {appId: a.id, h: clamp(v, 0, 24)}); });
-  return {day: fd.day, tags: DAY_TAGS.filter(x => fd['tag_' + x.k] === 'on').map(x => x.k), cut: clamp(num(fd.cut), 0, 24), uses, note: (fd.note || '').trim()};
+  return {day: fd.day, tags: DAY_TAGS.filter(x => fd['tag_' + x.k] === 'on').map(x => x.k), cut: clamp(num(fd.cut), 0, 24), fix: String(fd.fix || '').trim() === '' ? '' : Math.max(0, num(fd.fix)), uses, note: (fd.note || '').trim()};
 }
 window.jPreview = function (f) {
   const j = journalFromForm(f), k = journalKwh(j), el = $('#jEst'); if (!el) return;
   el.innerHTML = k > 0 ? t('Ces appareils ≈ <b>{k}</b> ce jour-là ({f}).', {k: K(k), f: F(k * curPrice())}) : '';
 };
 views.journal = () => {
-  const J = journalOf(), C = consumption(), p = curPrice(), td = today(), tj = journalDay(td);
+  const J = journalOf(), C = consumption(), p = curPrice(), td = logDay(), tj = journalDay(td);
   let h = topbar() + pageHead(t('Au quotidien'), t('Journal du jour'), `<button class="btn btn-primary" data-action="add-journal">📝 ${tj ? t('Modifier aujourd\'hui') : t('Noter ma journée')}</button>`);
   h += alertBox('blue', '💡', t('Votre consommation change selon les jours : quelqu\'un en plus à la maison, la machine à laver, la clim… Notez ici ce qui sort de l\'ordinaire. L\'appli met ces jours de côté pour calculer votre <b>semaine normale</b>, mesure leur effet réel et en tient compte dans la prévision.'));
   if (!J.length) return h + `<div class="card mt">${empty(t('Aucun jour noté pour l\'instant.') + `<div class="mt"><button class="btn btn-sm btn-primary" data-action="add-journal">📝 ${t('Noter ma journée')}</button></div>`)}</div>`;
@@ -2058,7 +2076,7 @@ views.journal = () => {
     const tags = (j.tags || []).map(k => TAGK[k] ? TAGK[k].e + ' ' + t(TAGK[k].l) : '').filter(Boolean);
     if (num(j.cut) > 0) tags.push('🚫 ' + t('coupure {h} h', {h: nf(j.cut, 1)}));
     const usesTxt = (j.uses || []).map(u => { const a = D.appliances.find(x => x.id === u.appId); return a ? `${appName(a)} ${u.n != null ? '×' + nf(u.n) : nf(u.h, 1) + ' h'}` : ''; }).filter(Boolean).join(', ');
-    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${est > 0 || real != null ? `<small class="hint" style="display:block">${est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : ''}${est > 0 && real != null ? ' · ' : ''}${real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) : ''}</small>` : ''}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
+    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${est > 0 || real != null ? `<small class="hint" style="display:block">${est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : ''}${est > 0 && real != null ? ' · ' : ''}${real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) + (C.fixes[j.day] != null ? ' ✏️ ' + t('corrigé (calcul : {k})', {k: K(C.auto[j.day] || 0)}) : '') : ''}</small>` : ''}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
   };
   if (fut.length) h += `<div class="section"><div class="section-title">${t('Jours à venir')}</div><div class="card"><div class="list">${fut.slice().reverse().map(line).join('')}</div></div></div>`;
   h += `<div class="section"><div class="section-title">${t('Jours notés')}</div><div class="card"><div class="list">${past.slice(0, 60).map(line).join('')}</div></div></div>`;
@@ -2167,7 +2185,7 @@ views.reglages = () => {
       <p class="hint">${t('Source des tarifs par défaut')} : ${TARIFF_SOURCE}. ${t('Astuce : le vérificateur de ticket peut étalonner la redevance et la taxe communale à partir d\'un vrai reçu.')}</p>
     </form></div>`;
   h += `<div class="grid g2 mt">
-  <div class="card"><h2>🕵️ ${t('Compteur')}</h2><form class="stack mt" data-form="pulse">${field(t('Constante du voyant (imp/kWh)'), numInp('pulse', s.pulse), t('Inscrite sur le compteur, ex : « 1600 imp/kWh ». Sert au mode détective.'))}<button class="btn">${t('Enregistrer')}</button></form></div>
+  <div class="card"><h2>🕵️ ${t('Compteur')}</h2><form class="stack mt" data-form="pulse">${field(t('Constante du voyant (imp/kWh)'), numInp('pulse', s.pulse), t('Inscrite sur le compteur, ex : « 1600 imp/kWh ». Sert au mode détective.'))}${field(t('Ma journée se termine à'), sel('dayEnd', [...Array(13)].map((_, h) => [h, h ? t('{h} h du matin', {h}) : t('minuit (par défaut)')]), num(s.dayEnd)), t('Vous vous couchez tard ? Avec 5 h, ce que vous consommez entre minuit et 5 h compte pour la veille (graphiques, profil de la semaine, journal).'))}<button class="btn">${t('Enregistrer')}</button></form></div>
   <div class="card"><h2>💾 ${t('Sauvegarde')}</h2><p class="sub mt-s">${s.lastBackup ? t('Dernière sauvegarde : {d}', {d: new Date(s.lastBackup).toLocaleDateString(LOCALE())}) : t('Aucune sauvegarde pour l\'instant.')}</p>
     <div class="flex wrap mt"><button class="btn btn-primary" data-action="export">⬇️ ${t('Exporter mes données')}</button><label class="btn" style="cursor:pointer">⬆️ ${t('Importer')}<input type="file" accept=".json,application/json" data-live="import" hidden></label></div>
     <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoyez-le-vous sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p></div>
@@ -2535,7 +2553,7 @@ const forms = {
     Object.assign(P, {name: f.name.trim() || P.name, tranches, tva: num(f.tva), tvaFrom: num(f.tvaFrom), tco: num(f.tco), redev: num(f.redev), timbre: num(f.timbre), min: num(f.min)});
     save(); render(); toast(t('Grille enregistrée ✓'));
   },
-  pulse(f) { D.settings.pulse = Math.max(1, num(f.pulse) || 1600); save(); render(); toast(t('Enregistré ✓')); },
+  pulse(f) { D.settings.pulse = Math.max(1, num(f.pulse) || 1600); D.settings.dayEnd = clamp(num(f.dayEnd), 0, 12); save(); render(); toast(t('Enregistré ✓')); },
   drop(f) { const a = num(f.a), b = num(f.b), mn = num(f.min); if (!(a > b) || mn <= 0) return toast(t('Le solde de fin doit être plus petit que celui du début.'), 'err'); saveMeasure(f.key, (a - b) * 1000 * 60 / mn, 'drop'); },
   person(f) { const m = meter(); m.people.push({id: uid(), name: f.name.trim()}); save(); render(); },
   'share-total'(f) { state.shareTotal = money(f.total); render(); },
@@ -2564,7 +2582,7 @@ const live = {
 
 /* --- Journal, profil de la semaine, rapport : actions et formulaires --- */
 Object.assign(actions, {
-  'add-journal': () => { const j = journalDay(today()); openModal('📝 ' + t('Journal du jour'), journalForm(j || {})); jPreview($('#modal-body form')); },
+  'add-journal': () => { const j = journalDay(logDay()); openModal('📝 ' + t('Journal du jour'), journalForm(j || {})); jPreview($('#modal-body form')); },
   'edit-journal': id => { openModal('📝 ' + t('Journal du jour'), journalForm(D.journal.find(j => j.id === id) || {})); jPreview($('#modal-body form')); },
   'del-journal': id => { if (!confirm(t('Supprimer ce jour du journal ?'))) return; D.journal = D.journal.filter(j => j.id !== id); save(); closeModal(); render(); },
   'report-wa': () => window.open('https://wa.me/?text=' + encodeURIComponent(reportText(monthReport(state.reportYM || curYM()))), '_blank'),
@@ -2681,7 +2699,7 @@ fr: [
 <li>Réglages → <b>Exporter mes données</b> créez un fichier. Envoyez-le-vous (WhatsApp, e-mail) au moins une fois par mois.</li>
 <li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
 <li>Vider les données du navigateur efface tout : gardez toujours une sauvegarde récente.</li></ul>`],
-['📝 Journal du jour et jours spéciaux', `<p>Menu <b>📝 Journal du jour</b> (ou le bouton + → « Noter ma journée »). Pour un jour donné, cochez ce qui sort de l'ordinaire : <b>personne(s) en plus</b> (ex : papa à la maison le week-end), invités, maison vide, forte chaleur, <b>coupure</b> (avec sa durée). Indiquez aussi, si vous voulez, les appareils utilisés : <b>nombre de fois</b> pour la machine à laver, le fer, la bouilloire… et <b>heures</b> pour la clim, la télé, l'ordinateur…</p><ul><li>L'appli estime ce que ces appareils ont consommé et le compare à ce que le compteur a vraiment mesuré ce jour-là.</li><li>Les jours spéciaux sont mis à part pour calculer votre semaine normale, et l'appli mesure leur effet réel (ex : « Personne en plus : +75 % »).</li><li>Vous pouvez noter un <b>jour à venir</b> : la prévision et les rappels en tiennent compte.</li></ul>`],
+['📝 Journal du jour et jours spéciaux', `<p>Menu <b>📝 Journal du jour</b> (ou le bouton + → « Noter ma journée »). Pour un jour donné, cochez ce qui sort de l'ordinaire : <b>personne(s) en plus</b> (ex : papa à la maison le week-end), invités, maison vide, forte chaleur, <b>coupure</b> (avec sa durée). Indiquez aussi, si vous voulez, les appareils utilisés : <b>nombre de fois</b> pour la machine à laver, le fer, la bouilloire… et <b>heures</b> pour la clim, la télé, l'ordinateur…</p><ul><li>L'appli estime ce que ces appareils ont consommé et le compare à ce que le compteur a vraiment mesuré ce jour-là.</li><li>Les jours spéciaux sont mis à part pour calculer votre semaine normale, et l'appli mesure leur effet réel (ex : « Personne en plus : +75 % »).</li><li>Vous pouvez noter un <b>jour à venir</b> : la prévision et les rappels en tiennent compte.</li><li><b>Corriger un jour</b> : si le chiffre calculé ne correspond pas à la réalité (relevé fait à une heure inhabituelle), saisissez la vraie consommation du jour ; l'écart est reporté sur les jours voisins pour que le total reste juste.</li><li><b>Couche-tard ?</b> Réglages → « Ma journée se termine à » (ex : 5 h) : ce que vous consommez après minuit compte pour la veille.</li></ul>`],
 ['📆 Profil de la semaine et prévision', `<p>Notez votre solde <b>chaque jour à la même heure</b> (le soir avant de dormir, par exemple) pendant 2 à 3 semaines. L'appli calcule la consommation moyenne de chaque jour de la semaine (12 dernières semaines), avec le coût, l'écart entre le jour le plus bas et le plus haut, et le nombre de relevés.</p><ul><li>Si un jour est toujours spécial chez vous (quelqu'un en plus chaque samedi), sa moyenne habituelle l'inclut (🏷️).</li><li><b>Prévision</b> : le crédit restant est consommé jour par jour selon ce profil et les jours spéciaux prévus. Dès que chaque jour a au moins 2 relevés (5 jours sur 7), les « jours restants » et le conseil de recharge de l'accueil l'utilisent.</li></ul>`],
 ['🧾 Rapport du mois', `<p>Menu <b>🧾 Rapport du mois</b> : kWh achetés et dépensés, prix moyen payé, consommation, jour et jour de la semaine les plus gourmands, appareil le plus gourmand, jours spéciaux, coupures, budget et comparaison avec le mois précédent. Partagez-le sur WhatsApp, copiez le texte ou faites un PDF (« Imprimer / PDF » → « Enregistrer en PDF »).</p>`],
 ['📲 Installer l\'application', installHelp],
@@ -2803,6 +2821,15 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Console de jeux (PS5, Xbox…)": "Game console (PS5, Xbox…)",
+"Consommation réelle de ce jour (kWh, correction)": "Actual usage for this day (kWh, correction)",
+"Calculé par l'appli : {k}. Si vous connaissez le vrai chiffre (ex : relevés le soir et le lendemain soir), saisissez-le : l'écart est reporté sur les jours voisins. Laissez vide pour garder le calcul.": "Calculated by the app: {k}. If you know the real figure (e.g. readings one evening and the next), enter it: the difference is moved to the neighbouring days. Leave empty to keep the calculation.",
+"Laissez vide : l'appli calcule ce jour à partir de vos relevés.": "Leave empty: the app calculates this day from your readings.",
+"corrigé (calcul : {k})": "corrected (calculated: {k})",
+"Ma journée se termine à": "My day ends at",
+"{h} h du matin": "{h} a.m.",
+"minuit (par défaut)": "midnight (default)",
+"Vous vous couchez tard ? Avec 5 h, ce que vous consommez entre minuit et 5 h compte pour la veille (graphiques, profil de la semaine, journal).": "Late nights? With 5 a.m., what you use between midnight and 5 a.m. counts for the previous day (charts, weekly profile, log).",
 "nombre de fois": "number of times",
 "heures (pour les {n})": "hours (for all {n})",
 "heures": "hours",
@@ -3566,6 +3593,8 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Console de jeux (PS5, Xbox…)": "Console (PS5, Xbox…)",
+"Ma journée se termine à": "Sama bés dafay jeex ci",
 "Journal du jour": "Jaaréer bés bi",
 "Profil de la semaine": "Ayu-bés bi",
 "Rapport du mois": "Rapport weer wi",
