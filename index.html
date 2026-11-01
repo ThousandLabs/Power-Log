@@ -486,7 +486,7 @@ function defaults() {
   return {
     v: 1,
     settings: {lang: '', theme: 'auto', cur: m.id, profiles: clone(OFFICIAL), pulse: 1600, lastBackup: 0, onboarded: false, dismissed: {}},
-    meters: [m], appliances: [], recharges: [], readings: [], measures: [], offsets: {}
+    meters: [m], appliances: [], recharges: [], readings: [], measures: [], journal: [], offsets: {}
   };
 }
 function load() {
@@ -498,7 +498,7 @@ function load() {
     out.settings.profiles = Object.assign(clone(OFFICIAL), out.settings.profiles || {});
     if (!out.meters || !out.meters.length) out.meters = [defaultMeter()];
     if (!out.meters.find(m => m.id === out.settings.cur)) out.settings.cur = out.meters[0].id;
-    ['appliances', 'recharges', 'readings', 'measures'].forEach(k => { if (!Array.isArray(out[k])) out[k] = []; });
+    ['appliances', 'recharges', 'readings', 'measures', 'journal'].forEach(k => { if (!Array.isArray(out[k])) out[k] = []; });
     if (!out.offsets) out.offsets = {};
     out.meters.forEach(m => { if (!m.people) m.people = []; if (!m.profile) m.profile = 'DPP'; });
     return out;
@@ -659,7 +659,10 @@ function snapshot(mid = meter().id) {
     const since = (Date.now() - C.last.t) / DAY;
     solde = Math.max(0, C.last.after - avg * Math.max(0, since)); soldeAt = C.last.t;
   }
-  const daysLeft = solde != null && avg > 0 ? solde / avg : null;
+  let daysLeft = solde != null && avg > 0 ? solde / avg : null;
+  // Prévision jour par jour avec le profil de la semaine (dès qu'il est fiable)
+  const prof = weekProfile(mid, C), fc = solde != null ? forecast({solde, avg, m}, prof) : null;
+  if (fc && prof.reliable && fc.daysLeft != null) daysLeft = fc.daysLeft;
   const bought = boughtIn(ym, mid), spent = spentIn(ym, mid);
   const room = trancheRoom(P, bought);
   const price = priceAt(P, bought);
@@ -668,7 +671,99 @@ function snapshot(mid = meter().id) {
   const projMonthKwh = avg * dim;
   const projMonthCost = costOf(P, 0, projMonthKwh, true).total;
   const lastReadAge = C.last ? (Date.now() - C.last.t) / DAY : null;
-  return {m, P, ym, C, est, avg, avgSource, solde, soldeAt, daysLeft, bought, spent, room, price, monthCons, dom, dim, daysToEnd, projMonthKwh, projMonthCost, lastReadAge};
+  return {m, P, ym, C, est, avg, avgSource, solde, soldeAt, daysLeft, prof, fc, bought, spent, room, price, monthCons, dom, dim, daysToEnd, projMonthKwh, projMonthCost, lastReadAge};
+}
+
+/* =========================================================================
+   6 bis. JOURNAL DU JOUR, PROFIL DE LA SEMAINE, PRÉVISION
+   -------------------------------------------------------------------------
+   • Journal : pour un jour donné, on note des étiquettes (personne en plus,
+     invités, maison vide, forte chaleur, coupure), les appareils utilisés
+     (nombre de fois ou durée) et une note.
+   • Profil de la semaine : moyenne réelle (compteur) de chaque jour de la
+     semaine sur les 12 dernières semaines, en mettant de côté les jours
+     « spéciaux » (étiquetés). On mesure aussi l'effet de chaque étiquette.
+   • Prévision : le crédit restant est consommé jour après jour selon ce
+     profil (+ les jours spéciaux déjà prévus dans le journal).
+   ========================================================================= */
+const DAY_TAGS = [
+  {k: 'plus', e: '👨‍👩‍👦', l: 'Personne(s) en plus'},
+  {k: 'invites', e: '🎉', l: 'Invités / fête'},
+  {k: 'absent', e: '🧳', l: 'Maison vide / absents'},
+  {k: 'chaud', e: '🥵', l: 'Forte chaleur'},
+  {k: 'coupure', e: '🚫', l: 'Coupure de courant'}
+];
+const TAGK = Object.fromEntries(DAY_TAGS.map(x => [x.k, x]));
+// Appareils qu'on compte « en nombre de fois » (une utilisation = durée typique de la table)
+const PER_USE = new Set(['lavage', 'fer', 'bouil', 'micro', 'mixeur', 'cuiseur', 'seche', 'four', 'plaque', 'pompe', 'chauffe', 'printer', 'charger']);
+const isPerUse = a => PER_USE.has(a && a.type);
+const journalOf = (mid = meter().id) => (D.journal || []).filter(j => j.meterId === mid).sort((a, b) => a.day < b.day ? 1 : -1);
+const journalDay = (day, mid = meter().id) => (D.journal || []).find(j => j.meterId === mid && j.day === day);
+const WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const wdOf = day => { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d).getDay(); };
+const wdName = (w, style = 'long') => { const s = new Date(2024, 0, 7 + w).toLocaleDateString(LOCALE(), {weekday: style}).replace('.', ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+const wdLow = w => lang() === 'en' ? wdName(w) : wdName(w).toLowerCase();
+const dayName = day => { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(LOCALE(), {weekday: 'long', day: 'numeric', month: 'long'}); };
+// kWh estimés d'une utilisation notée dans le journal
+function useKwh(u) {
+  const a = D.appliances.find(x => x.id === u.appId); if (!a) return 0;
+  const r = refOf(a.type), w = num(a.watts), duty = a.duty != null && a.duty !== '' ? num(a.duty) : r.duty;
+  if (isPerUse(a)) return num(u.n) * w * duty * r.h / 1000;
+  return Math.max(1, num(a.qty) || 1) * w * duty * clamp(num(u.h), 0, 24) / 1000;
+}
+const journalKwh = j => sum(j.uses || [], useKwh);
+const isSpecial = j => !!(j && ((j.tags || []).length || num(j.cut) > 0));
+
+/* Profil de la semaine (12 dernières semaines, jours complets seulement) */
+function weekProfile(mid = meter().id, C = consumption(mid)) {
+  const from = dstr(new Date(Date.now() - 84 * DAY)), td = today();
+  const days = Object.keys(C.daily).filter(d => d >= from && d < td && (C.cover[d] || 0) >= .8);
+  const wd = [...Array(7)].map(() => []), all = [], tagged = {};
+  days.forEach(d => {
+    const v = C.daily[d], j = journalDay(d, mid);
+    if (isSpecial(j)) { (j.tags || []).forEach(k => { (tagged[k] = tagged[k] || []).push({d, v}); }); if (num(j.cut) > 0 && !(j.tags || []).includes('coupure')) (tagged.coupure = tagged.coupure || []).push({d, v}); return; }
+    wd[wdOf(d)].push(v); all.push(v);
+  });
+  const mean = a => a.length ? sum(a) / a.length : 0;
+  const normal = mean(all);
+  // Un jour de la semaine qui n'a QUE des jours spéciaux (ex : papa présent tous les samedis) :
+  // ces jours-là deviennent sa « normale », et on ne leur réapplique pas l'effet des étiquettes.
+  const mixed = wd.map((a, i) => !a.length);
+  days.forEach(d => { const i = wdOf(d); if (mixed[i]) wd[i].push(C.daily[d]); });
+  const W = wd.map((a, i) => ({w: i, avg: mean(a), n: a.length, mixed: mixed[i] && a.length > 0, min: a.length ? Math.min(...a) : 0, max: a.length ? Math.max(...a) : 0}));
+  // Effet de chaque étiquette : comparé à la moyenne normale du même jour de la semaine
+  const tags = {};
+  Object.entries(tagged).forEach(([k, arr]) => {
+    const ratios = arr.map(x => { const base = W[wdOf(x.d)].n && !W[wdOf(x.d)].mixed ? W[wdOf(x.d)].avg : normal; return base > 0 ? x.v / base : null; }).filter(x => x != null);
+    tags[k] = {n: arr.length, avg: mean(arr.map(x => x.v)), ratio: ratios.length ? mean(ratios) : null};
+  });
+  const known = W.filter(x => x.n >= 1).length, solid = W.filter(x => x.n >= 2).length;
+  return {W, normal, tags, known, solid, reliable: solid >= 5 && known === 7, usable: known >= 4, days: days.length};
+}
+// Consommation attendue pour un jour donné (profil + jour spécial prévu)
+function expectedDay(day, prof, fallback, mid = meter().id) {
+  const w = prof.W[wdOf(day)];
+  let k = w.n ? w.avg : (prof.normal || fallback);
+  const j = journalDay(day, mid);
+  if (j && !w.mixed) (j.tags || []).forEach(tg => { if (tg === 'coupure') return; const x = prof.tags[tg]; if (x && x.ratio != null && x.n >= 1) k *= x.ratio; });
+  if (j && num(j.cut) > 0) k *= Math.max(0, 1 - num(j.cut) / 24);
+  return k;
+}
+// Simulation jour par jour du crédit restant
+function forecast(S, prof) {
+  const out = {days: [], daysLeft: null, runOut: null};
+  if (S.solde == null || !prof.usable) return out;
+  let left = S.solde, t = Date.now(), n = 0, total = 0;
+  while (n < 62) {
+    const d = new Date(t), day = dstr(d), end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+    const frac = (end - t) / DAY, k = expectedDay(day, prof, S.avg, S.m.id), use = k * frac;
+    if (n < 7) out.days.push({day, k, use, left: Math.max(0, left - use), special: isSpecial(journalDay(day, S.m.id))});
+    if (out.daysLeft == null && use > 0 && left - use <= 0) { const f = left / use * frac; out.daysLeft = total + f; out.runOut = t + f * DAY; }
+    left -= use; total += frac; t = end; n++;
+    if (out.daysLeft != null && n >= 7) break;
+  }
+  if (out.daysLeft == null) out.daysLeft = total;
+  return out;
 }
 
 /* =========================================================================
@@ -1381,6 +1476,7 @@ function applyTheme() {
 const VIEWS = [
   {id: 'home', e: '🏠', l: 'Accueil'},
   {id: 'recharges', e: '⚡', l: 'Recharges & relevés'},
+  {id: 'journal', e: '📝', l: 'Journal du jour'},
   {id: 'appareils', e: '🔌', l: 'Mes appareils'},
   {id: 'tranches', e: '📶', l: 'Tranches & tarifs'},
   {sep: 'Outils'},
@@ -1391,6 +1487,8 @@ const VIEWS = [
   {id: 'achat', e: '🛒', l: "Simulateur d'achat"},
   {id: 'partage', e: '👥', l: 'Partage de facture'},
   {id: 'stats', e: '📈', l: 'Historique & graphiques'},
+  {id: 'semaine', e: '📆', l: 'Profil de la semaine'},
+  {id: 'rapport', e: '🧾', l: 'Rapport du mois'},
   {sep: 'Aide'},
   {id: 'guide', e: '📘', l: "Guide d'utilisation"},
   {id: 'lexique', e: '📖', l: 'Lexique'},
@@ -1482,7 +1580,7 @@ function reminders(S) {
   if (S.dom <= 3) add('newmonth', 'green', '🗓️', t('<b>Nouveau mois</b> : le compteur des tranches est remis à zéro. Tes {k} premiers kWh achetés ce mois sont au tarif le plus bas.', {k: nf(t1.to)}));
   if (S.lastReadAge != null && S.lastReadAge >= 4) add('read', 'amber', '✍️', t('Votre dernier relevé date de <b>{n} jours</b>. Notez le solde de votre compteur (10 secondes) pour garder des chiffres justes.', {n: Math.floor(S.lastReadAge)}));
   const yd = dstr(new Date(Date.now() - DAY)), yv = S.C.daily[yd], yc = S.C.cover[yd] || 0;
-  if (yv != null && yc > .6 && S.C.median > 0 && yv > Math.max(S.C.median * 1.45, S.C.median + 1.2)) add('yday', 'amber', '📈', t('Hier vous avez consommé <b>{k}</b> ({f}), soit {x} % de plus que d\'habitude. Un appareil est resté allumé ?', {k: K(yv), f: F(yv * S.price), x: nf((yv / S.C.median - 1) * 100)}));
+  if (yv != null && yc > .6 && !isSpecial(journalDay(yd)) && S.C.median > 0 && yv > Math.max(S.C.median * 1.45, S.C.median + 1.2)) add('yday', 'amber', '📈', t('Hier vous avez consommé <b>{k}</b> ({f}), soit {x} % de plus que d\'habitude. Un appareil est resté allumé ?', {k: K(yv), f: F(yv * S.price), x: nf((yv / S.C.median - 1) * 100)}));
   if (S.C.avgReal && S.est > 0) {
     const ratio = S.C.avgReal.avg / S.est;
     if (ratio > 1.35) add('gap', 'red', '🕵️', t('Votre compteur indique <b>{r}/jour</b> mais vos appareils n\'en expliquent que {e}/jour. Un appareil oublié, mal réglé ou défaillant ? Lancez le <b>mode détective</b>.', {r: K(S.C.avgReal.avg), e: K(S.est)}));
@@ -1500,6 +1598,13 @@ function reminders(S) {
     const sb = sum(apps, appStandbyDay);
     if (sb >= .25) add('sb', 'blue', '🌙', t('Vos appareils en veille consomment environ {k} par mois ({f}) sans rien faire. Voir la <b>chasse à la veille</b>.', {k: K(sb * 30), f: F(sb * 30 * S.price)}));
   }
+  if (S.prof && S.prof.reliable) {
+    const kn = S.prof.W.filter(x => x.n), hi = kn.reduce((a, b) => b.avg > a.avg ? b : a), lo = kn.reduce((a, b) => b.avg < a.avg ? b : a);
+    if (lo.avg > 0 && hi.avg / lo.avg >= 1.4) add('wk', 'violet', '📆', t('Le <b>{a}</b>, vous consommez {x} fois plus que le {b} ({ka} contre {kb}). Voir le <b>profil de la semaine</b>.', {a: wdLow(hi.w), x: nf(hi.avg / lo.avg, 1), b: wdLow(lo.w), ka: K(hi.avg), kb: K(lo.avg)}));
+  }
+  const soon = journalOf().filter(j => j.day > today() && j.day <= dstr(new Date(Date.now() + 3 * DAY)) && (j.tags || []).some(k => k === 'plus' || k === 'invites'));
+  if (soon.length && S.prof) { const j = soon[soon.length - 1], k = expectedDay(j.day, S.prof, S.avg), base = S.prof.W[wdOf(j.day)].n ? S.prof.W[wdOf(j.day)].avg : (S.prof.normal || S.avg); add('plan', 'blue', '🏷️', t('<b>{d}</b> : journée chargée prévue (≈ {k}, soit {f}). Vérifiez que votre crédit suffit.', {d: dayName(j.day), k: K(k), f: F(k * S.price)}) + (k > base * 1.05 ? ' ' + t('C\'est environ {x} de plus qu\'un jour normal.', {x: F((k - base) * S.price)}) : '')); }
+  if (journalOf().length && !journalDay(today()) && new Date().getHours() >= 18) add('jday', 'green', '📝', t('Une journée particulière aujourd\'hui (machine à laver, quelqu\'un en plus, coupure…) ? <b>Notez-la</b> dans le journal.') + ` <button class="btn btn-sm mt-s" data-action="add-journal">📝 ${t('Noter ma journée')}</button>`);
   const hasData = D.recharges.length + D.readings.length + D.appliances.length > 0;
   if (hasData && Date.now() - (D.settings.lastBackup || 0) > 7 * DAY) add('backup', 'amber', '💾', t('Pensez à <b>sauvegarder vos données</b> (Réglages → Exporter). Sans sauvegarde, vider le navigateur efface tout.') + ` <button class="btn btn-sm btn-primary mt-s" data-action="export">💾 ${t('Exporter mes données')}</button>`);
   return out;
@@ -1589,6 +1694,7 @@ views.home = () => {
     </div></div>`;
   }
   h += adviceCard(S);
+  if (S.fc && S.fc.days.length && S.prof.usable) h += `<div class="card mt"><div class="card-head"><div><h2>🔮 ${t('Les prochains jours')}</h2><p class="hint mt-s">${S.prof.reliable ? t('D\'après votre profil de la semaine') : t('Profil de la semaine en construction')}</p></div><button class="btn btn-sm" data-action="go" data-id="semaine">${t('Détails')}</button></div><div class="list mt">${S.fc.days.slice(1, 4).map(d => `<div class="li"><div class="li-ic">${d.special ? '🏷️' : '📅'}</div><div class="g"><b>${esc(dayName(d.day))}</b><small>≈ ${K(d.use)} · ${F(d.use * S.price)}</small></div><b class="${d.left <= 0 ? 'neg' : ''}">${d.left <= 0 ? t('épuisé') : K(d.left, 1)}</b></div>`).join('')}</div><div class="flex wrap mt-s" style="gap:8px"><button class="btn btn-sm" data-action="add-journal">📝 ${t('Noter ma journée')}</button></div></div>`;
   if (rem.length) h += `<div class="section"><div class="section-title">${t('Rappels & conseils')}</div><div class="alerts">${rem.map(r => alertBox(r.cls, r.ic, r.html, `<button class="icon-btn" style="width:28px;height:28px" data-action="dismiss" data-id="${r.key}" aria-label="${esc(t('Masquer'))}">${icon('x', 14)}</button>`)).join('')}</div></div>`;
   // Chiffres du mois
   const bud = S.m.budget > 0 ? clamp(S.spent / S.m.budget, 0, 1.5) : 0;
@@ -1918,6 +2024,123 @@ views.stats = () => {
   return h;
 };
 
+/* --- Journal du jour --- */
+function journalForm(j = {}) {
+  const day = j.day || today(), apps = appsOf(), tags = j.tags || [], uses = Object.fromEntries((j.uses || []).map(u => [u.appId, u]));
+  const rows = apps.length ? apps.map(a => { const u = uses[a.id] || {}, per = isPerUse(a); return `<div class="li"><div class="li-ic">${refOf(a.type).e}</div><div class="g"><b>${esc(appName(a))}${num(a.qty) > 1 ? ' ×' + num(a.qty) : ''}</b><small>${per ? t('nombre de fois') : (num(a.qty) > 1 ? t('heures (pour les {n})', {n: num(a.qty)}) : t('heures'))}</small></div><input class="input" style="max-width:86px;text-align:center" name="${per ? 'n_' : 'h_'}${a.id}" value="${esc(per ? (u.n ?? '') : (u.h ?? ''))}" inputmode="decimal" placeholder="${per ? '0' : '0 h'}" oninput="jPreview(this.form)"></div>`; }).join('') : empty(t('Ajoutez d\'abord vos appareils dans « Mes appareils ».'));
+  return `<form class="stack" data-form="journal"><input type="hidden" name="id" value="${esc(j.id || '')}">
+    ${field(t('Jour'), `<input class="input" type="date" name="day" value="${esc(day)}" required>`, t('Vous pouvez aussi noter un jour à venir (ex : papa arrive samedi) : la prévision en tiendra compte.'))}
+    <div><span class="label">${t('Ce jour-là…')}</span><div class="chips mt-s">${DAY_TAGS.map(x => `<label class="chip ${tags.includes(x.k) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" name="tag_${x.k}" ${tags.includes(x.k) ? 'checked' : ''} style="display:none" onchange="this.parentNode.classList.toggle('on',this.checked)">${x.e} ${t(x.l)}</label>`).join('')}</div></div>
+    ${field(t('Coupure de courant (heures, facultatif)'), numInp('cut', j.cut || '', 'placeholder="0"'))}
+    <div><span class="label">${t('Appareils utilisés (facultatif)')}</span><p class="hint">${t('Notez seulement ceux qui changent d\'un jour à l\'autre : machine à laver, clim, fer, ordinateur…')}</p><div class="list mt-s">${rows}</div><p class="hint mt-s" id="jEst"></p></div>
+    ${field(t('Note (facultatif)'), inp('note', j.note || '', 'maxlength="80"'))}
+    <button class="btn btn-primary btn-block">${t('Enregistrer')}</button>
+    ${j.id ? `<button type="button" class="btn btn-danger btn-block" data-action="del-journal" data-id="${j.id}">${t('Supprimer')}</button>` : ''}
+  </form>`;
+}
+function journalFromForm(el) {
+  const fd = Object.fromEntries(new FormData(el)), uses = [];
+  appsOf().forEach(a => { const per = isPerUse(a), v = num(fd[(per ? 'n_' : 'h_') + a.id]); if (v > 0) uses.push(per ? {appId: a.id, n: v} : {appId: a.id, h: clamp(v, 0, 24)}); });
+  return {day: fd.day, tags: DAY_TAGS.filter(x => fd['tag_' + x.k] === 'on').map(x => x.k), cut: clamp(num(fd.cut), 0, 24), uses, note: (fd.note || '').trim()};
+}
+window.jPreview = function (f) {
+  const j = journalFromForm(f), k = journalKwh(j), el = $('#jEst'); if (!el) return;
+  el.innerHTML = k > 0 ? t('Ces appareils ≈ <b>{k}</b> ce jour-là ({f}).', {k: K(k), f: F(k * curPrice())}) : '';
+};
+views.journal = () => {
+  const J = journalOf(), C = consumption(), p = curPrice(), td = today(), tj = journalDay(td);
+  let h = topbar() + pageHead(t('Au quotidien'), t('Journal du jour'), `<button class="btn btn-primary" data-action="add-journal">📝 ${tj ? t('Modifier aujourd\'hui') : t('Noter ma journée')}</button>`);
+  h += alertBox('blue', '💡', t('Votre consommation change selon les jours : quelqu\'un en plus à la maison, la machine à laver, la clim… Notez ici ce qui sort de l\'ordinaire. L\'appli met ces jours de côté pour calculer votre <b>semaine normale</b>, mesure leur effet réel et en tient compte dans la prévision.'));
+  if (!J.length) return h + `<div class="card mt">${empty(t('Aucun jour noté pour l\'instant.') + `<div class="mt"><button class="btn btn-sm btn-primary" data-action="add-journal">📝 ${t('Noter ma journée')}</button></div>`)}</div>`;
+  const fut = J.filter(j => j.day > td), past = J.filter(j => j.day <= td);
+  const line = j => {
+    const real = (C.cover[j.day] || 0) >= .6 ? C.daily[j.day] : null, est = journalKwh(j);
+    const tags = (j.tags || []).map(k => TAGK[k] ? TAGK[k].e + ' ' + t(TAGK[k].l) : '').filter(Boolean);
+    if (num(j.cut) > 0) tags.push('🚫 ' + t('coupure {h} h', {h: nf(j.cut, 1)}));
+    const usesTxt = (j.uses || []).map(u => { const a = D.appliances.find(x => x.id === u.appId); return a ? `${appName(a)} ${u.n != null ? '×' + nf(u.n) : nf(u.h, 1) + ' h'}` : ''; }).filter(Boolean).join(', ');
+    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${est > 0 || real != null ? `<small class="hint" style="display:block">${est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : ''}${est > 0 && real != null ? ' · ' : ''}${real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) : ''}</small>` : ''}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
+  };
+  if (fut.length) h += `<div class="section"><div class="section-title">${t('Jours à venir')}</div><div class="card"><div class="list">${fut.slice().reverse().map(line).join('')}</div></div></div>`;
+  h += `<div class="section"><div class="section-title">${t('Jours notés')}</div><div class="card"><div class="list">${past.slice(0, 60).map(line).join('')}</div></div></div>`;
+  return h + `<div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="semaine">📆 ${t('Voir mon profil de la semaine')}</button></div>`;
+};
+
+/* --- Profil de la semaine & prévision --- */
+views.semaine = () => {
+  const S = snapshot(), prof = S.prof, p = S.price;
+  let h = topbar() + pageHead(t('Analyse'), t('Profil de la semaine'));
+  h += alertBox('blue', '📆', t('Notez votre solde <b>chaque jour à la même heure</b> (le soir avant de dormir, par exemple) pendant 2 à 3 semaines. L\'appli calcule alors ce que consomme chaque jour de la semaine chez vous, et prévoit votre crédit jour par jour.'));
+  if (!prof.known) return h + `<div class="card mt">${empty(t('Pas encore assez de relevés quotidiens. Notez votre solde chaque jour : le profil apparaît dès les premiers jours complets.'))}<div class="mt"><button class="btn btn-sm btn-primary" data-action="add-reading">✍️ ${t('Noter mon solde')}</button></div></div>`;
+  const items = WD_ORDER.map(w => { const x = prof.W[w]; return {l: wdName(w, 'short'), v: x.avg, dim: x.n < 2, tip: x.n ? `${wdName(w)} : ${kfTxt(x.avg, p)} · ${t('{n} relevé(s)', {n: x.n})}` : `${wdName(w)} : —`}; });
+  const known = prof.W.filter(x => x.n), hi = known.reduce((a, b) => b.avg > a.avg ? b : a, known[0]), lo = known.reduce((a, b) => b.avg < a.avg ? b : a, known[0]);
+  h += `<div class="card mt"><div class="card-head"><div><h2>📆 ${t('Ma semaine normale')}</h2><p class="hint mt-s">${t('Moyenne des 12 dernières semaines, jours spéciaux mis à part · {n} jours complets', {n: prof.days})}</p></div></div>${barChart(items, {h: 190, labels: 7, ref: prof.normal, refLabel: t('moyenne'), title: t('Consommation par jour de la semaine')})}
+    <p class="hint mt-s">${t('Barre pâle = moins de 2 relevés pour ce jour : à confirmer.')}${prof.W.some(x => x.mixed) ? ' ' + t('🏷️ = ce jour est toujours un jour spécial chez vous (ex : quelqu\'un en plus chaque samedi) : c\'est donc sa moyenne habituelle.') : ''}</p>
+    <div class="table-wrap mt"><table class="t"><thead><tr><th>${t('Jour')}</th><th>${t('Moyenne')}</th><th>${t('Coût')}</th><th>${t('Écart')}</th><th>${t('Relevés')}</th></tr></thead><tbody>${WD_ORDER.map(w => { const x = prof.W[w]; return `<tr><td>${wdName(w)}${x.mixed ? ' 🏷️' : ''}</td><td>${x.n ? K(x.avg) : '—'}</td><td>${x.n ? F(x.avg * p) : '—'}</td><td>${x.n && x.n > 1 ? K(x.min, 1) + ' – ' + K(x.max, 1) : '—'}</td><td>${x.n}</td></tr>`; }).join('')}</tbody></table></div>
+    ${hi && lo && hi !== lo && lo.avg > 0 && hi.avg / lo.avg >= 1.3 ? `<div class="mt">${alertBox('violet', '🔎', t('Le <b>{a}</b> est votre jour le plus gourmand : {ka}, soit {x} fois le {b} ({kb}). Cela coûte environ {f} de plus chaque semaine.', {a: wdLow(hi.w), ka: kfTxt(hi.avg, p), x: nf(hi.avg / lo.avg, 1), b: wdLow(lo.w), kb: K(lo.avg), f: F((hi.avg - lo.avg) * p)}))}</div>` : ''}</div>`;
+  // Effet des jours spéciaux
+  const tg = Object.entries(prof.tags).filter(([k]) => TAGK[k]);
+  h += `<div class="card mt"><h2>🏷️ ${t('Effet des jours spéciaux')}</h2>${tg.length ? `<div class="list mt">${tg.map(([k, x]) => `<div class="li"><div class="li-ic">${TAGK[k].e}</div><div class="g"><b>${t(TAGK[k].l)}</b><small>${t('{n} jour(s) · {k}/jour en moyenne', {n: x.n, k: K(x.avg)})}</small></div><div class="right"><b class="${x.ratio > 1.05 ? 'neg' : x.ratio < .95 ? 'pos' : ''}">${x.ratio == null ? '—' : (x.ratio >= 1 ? '+' : '') + nf((x.ratio - 1) * 100) + ' %'}</b><small class="hint" style="display:block">${x.ratio == null ? '' : (x.ratio >= 1 ? '+' : '−') + F(Math.abs(x.avg - x.avg / x.ratio) * p) + ' ' + t('/jour')}</small></div></div>`).join('')}</div>` : `<p class="sub mt-s">${t('Notez vos jours spéciaux dans le journal (quelqu\'un en plus, invités, coupure…) pour voir combien ils vous coûtent vraiment.')}</p>`}<div class="mt"><button class="btn btn-sm" data-action="add-journal">📝 ${t('Noter ma journée')}</button></div></div>`;
+  // Prévision
+  if (S.fc && S.fc.days.length) {
+    h += `<div class="card mt"><h2>🔮 ${t('Prévision des 7 prochains jours')}</h2><div class="list mt">${S.fc.days.map((d, i) => `<div class="li"><div class="li-ic">${d.special ? '🏷️' : '📅'}</div><div class="g"><b>${i === 0 ? t('Aujourd\'hui (reste de la journée)') : esc(dayName(d.day))}</b><small>${t('≈ {k} · {f}', {k: K(d.use), f: F(d.use * p)})}</small></div><div class="right"><b class="${d.left <= 0 ? 'neg' : ''}">${d.left <= 0 ? t('épuisé') : K(d.left, 1)}</b><small class="hint" style="display:block">${t('crédit restant')}</small></div></div>`).join('')}</div>
+      <p class="sub mt">${S.fc.runOut ? t('Votre crédit devrait s\'épuiser vers le <b>{d}</b>.', {d: new Date(S.fc.runOut).toLocaleDateString(LOCALE(), {weekday: 'long', day: 'numeric', month: 'long'})}) : t('Votre crédit tient au-delà des 2 prochains mois.')}</p>
+      <p class="hint mt-s">${prof.reliable ? t('La prévision utilise votre profil de la semaine et les jours spéciaux prévus dans le journal.') : t('Profil encore incomplet : la page d\'accueil garde la moyenne simple tant que chaque jour n\'a pas au moins 2 relevés (5 jours sur 7).')}</p></div>`;
+  }
+  return h;
+};
+
+/* --- Rapport du mois --- */
+function monthReport(ym, mid = meter().id) {
+  const m = D.meters.find(x => x.id === mid), P = profOf(m), C = consumption(mid), price = priceAt(P, boughtIn(ym, mid));
+  const bought = boughtIn(ym, mid), spent = spentIn(ym, mid), rech = rechOf(mid).filter(r => ymOf(r.date) === ym);
+  const dd = Object.entries(C.daily).filter(([d]) => d.startsWith(ym) && (C.cover[d] || 0) >= .6);
+  const cons = sum(Object.entries(C.daily).filter(([d]) => d.startsWith(ym)), ([, v]) => v);
+  const top = dd.length ? dd.reduce((a, b) => b[1] > a[1] ? b : a) : null;
+  const byWd = [...Array(7)].map(() => []); dd.forEach(([d, v]) => byWd[wdOf(d)].push(v));
+  const wdAvg = byWd.map((a, w) => ({w, avg: a.length ? sum(a) / a.length : 0, n: a.length})).filter(x => x.n);
+  const topWd = wdAvg.length ? wdAvg.reduce((a, b) => b.avg > a.avg ? b : a) : null;
+  const apps = appsOf(mid), topApp = apps.length ? [...apps].sort((a, b) => appKwhDay(b) - appKwhDay(a))[0] : null, estTot = sum(apps, appKwhDay);
+  const J = journalOf(mid).filter(j => j.day.startsWith(ym)), cuts = J.filter(j => num(j.cut) > 0 || (j.tags || []).includes('coupure'));
+  const anom = C.anomalies.filter(x => ymOf(dstr(new Date(x.t1))) === ym).length;
+  const prev = shiftYM(ym, -1), pBought = boughtIn(prev, mid), pSpent = spentIn(prev, mid);
+  return {m, P, ym, price, bought, spent, rech, cons, days: dd.length, top, topWd, topApp, topShare: topApp && estTot ? appKwhDay(topApp) / estTot : 0, cuts, cutH: sum(cuts, j => num(j.cut)), special: J.filter(isSpecial).length, anom, prev, pBought, pSpent, budget: m.budget};
+}
+function reportText(R) {
+  const L = [`⚡ ${t('Rapport électricité')} — ${R.m.name} · ${monthName(R.ym)}`, '',
+    `• ${t('Acheté')} : ${K(R.bought, 0)} ${t('pour')} ${F(R.spent)}${R.bought ? ' (' + nf(R.spent / R.bought, 1) + ' F/kWh)' : ''} · ${t('{n} recharge(s)', {n: R.rech.length})}`];
+  if (R.cons) L.push(`• ${t('Consommé (relevés)')} : ${K(R.cons, 0)}${R.days ? ' · ' + t('{k}/jour en moyenne', {k: K(R.cons / Math.max(1, R.days), 1)}) : ''}`);
+  if (R.top) L.push(`• ${t('Jour le plus gourmand')} : ${dayName(R.top[0])} (${K(R.top[1], 1)})`);
+  if (R.topWd) L.push(`• ${t('Jour de la semaine le plus gourmand')} : ${wdName(R.topWd.w)} (${K(R.topWd.avg, 1)})`);
+  if (R.topApp) L.push(`• ${t('Appareil le plus gourmand')} : ${appName(R.topApp)} (${nf(R.topShare * 100)} %)`);
+  if (R.cuts.length) L.push(`• ${t('Coupures notées')} : ${R.cuts.length}${R.cutH ? ' (' + nf(R.cutH, 1) + ' h)' : ''}`);
+  if (R.budget > 0) L.push(`• ${t('Budget')} : ${F(R.spent)} / ${F(R.budget)}${R.spent > R.budget ? ' ⚠️' : ' ✅'}`);
+  if (R.pSpent) L.push(`• ${t('Par rapport à {m}', {m: monthName(R.prev)})} : ${R.spent >= R.pSpent ? '+' : ''}${nf((R.spent / R.pSpent - 1) * 100)} %`);
+  L.push('', t('Calculé avec {app}', {app: APP}) + ' · https://thousandlabs.github.io/Power-Log/');
+  return L.join('\n');
+}
+views.rapport = () => {
+  const ym = state.reportYM || curYM(), R = monthReport(ym), p = R.price;
+  let h = topbar() + pageHead(t('Analyse'), t('Rapport du mois'), `<input class="input no-print" type="month" value="${ym}" data-live="reportYM" style="max-width:170px">`);
+  const kv = (l, v) => `<div class="kv"><span>${l}</span><b>${v}</b></div>`;
+  h += `<div class="card"><h2>🧾 ${esc(R.m.name)} · ${monthName(ym)}</h2><div class="list mt">
+    ${kv(t('Acheté'), `${K(R.bought, 0)} · ${F(R.spent)}`)}
+    ${kv(t('Prix moyen payé'), R.bought ? nf(R.spent / R.bought, 1) + ' F/kWh' : '—')}
+    ${kv(t('Recharges'), R.rech.length)}
+    ${kv(t('Consommé (relevés)'), R.cons ? K(R.cons, 0) + ' = ' + F(R.cons * p) : '—')}
+    ${kv(t('Jour le plus gourmand'), R.top ? `${esc(dayName(R.top[0]))} · ${K(R.top[1], 1)}` : '—')}
+    ${kv(t('Jour de la semaine le plus gourmand'), R.topWd ? `${wdName(R.topWd.w)} · ${K(R.topWd.avg, 1)}` : '—')}
+    ${kv(t('Appareil le plus gourmand'), R.topApp ? `${esc(appName(R.topApp))} · ${nf(R.topShare * 100)} %` : '—')}
+    ${kv(t('Jours spéciaux notés'), R.special)}
+    ${kv(t('Coupures notées'), R.cuts.length ? `${R.cuts.length}${R.cutH ? ' · ' + nf(R.cutH, 1) + ' h' : ''}` : '0')}
+    ${kv(t('Périodes anormales'), R.anom)}
+    ${R.budget > 0 ? kv(t('Budget'), `<span class="${R.spent > R.budget ? 'neg' : 'pos'}">${F(R.spent)} / ${F(R.budget)}</span>`) : ''}
+    ${kv(t('Par rapport à {m}', {m: monthName(R.prev)}), R.pSpent ? `${R.spent >= R.pSpent ? '+' : ''}${nf((R.spent / R.pSpent - 1) * 100)} % (${F(R.pSpent)})` : '—')}
+  </div></div>`;
+  h += `<div class="flex wrap mt no-print" style="gap:8px"><button class="btn btn-primary btn-sm" data-action="report-wa">💬 ${t('Partager sur WhatsApp')}</button><button class="btn btn-sm" data-action="report-copy">📋 ${t('Copier le texte')}</button><button class="btn btn-sm" data-action="print">🖨️ ${t('Imprimer / PDF')}</button></div>
+    <p class="hint mt-s no-print">${t('Pour un PDF : « Imprimer / PDF », puis choisissez « Enregistrer en PDF » comme imprimante.')}</p>`;
+  return h;
+};
+
 /* =========================================================================
    13. RÉGLAGES, GUIDE, LEXIQUE, FORMULAIRES, IMPORT PAR TEXTE
    ========================================================================= */
@@ -2157,7 +2380,7 @@ function meterForm(m = {}) {
 const actions = {
   go: id => go(id),
   more: () => openModal(t('Toutes les sections'), `<div class="more-grid">${VIEWS.filter(v => !v.sep).map(v => `<button class="nav-btn ${state.view === v.id ? 'active' : ''}" data-action="go" data-id="${v.id}"><span class="emo">${v.e}</span><span>${t(v.l)}</span></button>`).join('')}</div>`),
-  quick: () => openModal(t('Ajouter'), `<div class="stack"><button class="btn btn-primary btn-block" data-action="add-recharge">⚡ ${t("J'ai rechargé")}</button><button class="btn btn-block" data-action="add-reading">✍️ ${t('Noter mon solde')}</button><button class="btn btn-block" data-action="add-app">🔌 ${t('Ajouter un appareil')}</button><button class="btn btn-block" data-action="text-import">📝 ${t('Décrire mes appareils en texte')}</button><button class="btn btn-block" data-action="go" data-id="calcul">🧮 ${t('Calculer une recharge')}</button></div>`),
+  quick: () => openModal(t('Ajouter'), `<div class="stack"><button class="btn btn-primary btn-block" data-action="add-recharge">⚡ ${t("J'ai rechargé")}</button><button class="btn btn-block" data-action="add-reading">✍️ ${t('Noter mon solde')}</button><button class="btn btn-block" data-action="add-journal">📝 ${t('Noter ma journée')}</button><button class="btn btn-block" data-action="add-app">🔌 ${t('Ajouter un appareil')}</button><button class="btn btn-block" data-action="text-import">📝 ${t('Décrire mes appareils en texte')}</button><button class="btn btn-block" data-action="go" data-id="calcul">🧮 ${t('Calculer une recharge')}</button></div>`),
   'close-modal': closeModal,
   dismiss: id => { D.settings.dismissed[id] = today(); save(); render(); },
   // Licence
@@ -2188,7 +2411,7 @@ const actions = {
   'switch-meter': id => { D.settings.cur = id; save(); closeModal(); render(); toast('📍 ' + meter().name); },
   'add-meter': () => openModal(t('Nouveau compteur'), meterForm({})),
   'edit-meter': id => openModal(t('Modifier le compteur'), meterForm(D.meters.find(m => m.id === id))),
-  'del-meter': id => { if (!confirm(t('Supprimer ce compteur ainsi que ses appareils, recharges et relevés ?'))) return; D.meters = D.meters.filter(m => m.id !== id); ['appliances', 'recharges', 'readings', 'measures'].forEach(k => D[k] = D[k].filter(x => x.meterId !== id)); if (D.settings.cur === id) D.settings.cur = D.meters[0].id; save(); closeModal(); render(); },
+  'del-meter': id => { if (!confirm(t('Supprimer ce compteur ainsi que ses appareils, recharges et relevés ?'))) return; D.meters = D.meters.filter(m => m.id !== id); ['appliances', 'recharges', 'readings', 'measures', 'journal'].forEach(k => D[k] = D[k].filter(x => x.meterId !== id)); if (D.settings.cur === id) D.settings.cur = D.meters[0].id; save(); closeModal(); render(); },
   // Recharges & relevés
   'add-recharge': () => openModal('⚡ ' + t('Nouvelle recharge'), rechargeForm({})),
   'edit-recharge': id => { openModal(t('Modifier la recharge'), rechargeForm(D.recharges.find(r => r.id === id))); rechPreview($('#modal-body form')); },
@@ -2339,6 +2562,26 @@ const live = {
   shareYM: el => { state.shareYM = el.value || curYM(); state.shareTotal = 0; render(); }
 };
 
+/* --- Journal, profil de la semaine, rapport : actions et formulaires --- */
+Object.assign(actions, {
+  'add-journal': () => { const j = journalDay(today()); openModal('📝 ' + t('Journal du jour'), journalForm(j || {})); jPreview($('#modal-body form')); },
+  'edit-journal': id => { openModal('📝 ' + t('Journal du jour'), journalForm(D.journal.find(j => j.id === id) || {})); jPreview($('#modal-body form')); },
+  'del-journal': id => { if (!confirm(t('Supprimer ce jour du journal ?'))) return; D.journal = D.journal.filter(j => j.id !== id); save(); closeModal(); render(); },
+  'report-wa': () => window.open('https://wa.me/?text=' + encodeURIComponent(reportText(monthReport(state.reportYM || curYM()))), '_blank'),
+  'report-copy': () => copyText(reportText(monthReport(state.reportYM || curYM())), t('Rapport copié ✓'))
+});
+forms.journal = (f, el) => {
+  const data = journalFromForm(el); if (!data.day) return toast(t('Choisissez un jour.'), 'err');
+  const mid = meter().id, same = D.journal.find(j => j.meterId === mid && j.day === data.day && j.id !== f.id);
+  if (same) D.journal = D.journal.filter(j => j !== same);
+  if (f.id && D.journal.find(j => j.id === f.id)) Object.assign(D.journal.find(j => j.id === f.id), data);
+  else D.journal.push({id: uid(), meterId: mid, ...data});
+  save(); closeModal(); render();
+  const k = journalKwh(data);
+  toast(k > 0 ? t('Journée notée ✓ Appareils ≈ {k} ({f}).', {k: K(k), f: F(k * curPrice())}) : t('Journée notée ✓'));
+};
+live.reportYM = el => { state.reportYM = el.value || curYM(); render(); };
+
 /* --- Événements --- */
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-action]'); if (!el) return;
@@ -2438,6 +2681,9 @@ fr: [
 <li>Réglages → <b>Exporter mes données</b> créez un fichier. Envoyez-le-vous (WhatsApp, e-mail) au moins une fois par mois.</li>
 <li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
 <li>Vider les données du navigateur efface tout : gardez toujours une sauvegarde récente.</li></ul>`],
+['📝 Journal du jour et jours spéciaux', `<p>Menu <b>📝 Journal du jour</b> (ou le bouton + → « Noter ma journée »). Pour un jour donné, cochez ce qui sort de l'ordinaire : <b>personne(s) en plus</b> (ex : papa à la maison le week-end), invités, maison vide, forte chaleur, <b>coupure</b> (avec sa durée). Indiquez aussi, si vous voulez, les appareils utilisés : <b>nombre de fois</b> pour la machine à laver, le fer, la bouilloire… et <b>heures</b> pour la clim, la télé, l'ordinateur…</p><ul><li>L'appli estime ce que ces appareils ont consommé et le compare à ce que le compteur a vraiment mesuré ce jour-là.</li><li>Les jours spéciaux sont mis à part pour calculer votre semaine normale, et l'appli mesure leur effet réel (ex : « Personne en plus : +75 % »).</li><li>Vous pouvez noter un <b>jour à venir</b> : la prévision et les rappels en tiennent compte.</li></ul>`],
+['📆 Profil de la semaine et prévision', `<p>Notez votre solde <b>chaque jour à la même heure</b> (le soir avant de dormir, par exemple) pendant 2 à 3 semaines. L'appli calcule la consommation moyenne de chaque jour de la semaine (12 dernières semaines), avec le coût, l'écart entre le jour le plus bas et le plus haut, et le nombre de relevés.</p><ul><li>Si un jour est toujours spécial chez vous (quelqu'un en plus chaque samedi), sa moyenne habituelle l'inclut (🏷️).</li><li><b>Prévision</b> : le crédit restant est consommé jour par jour selon ce profil et les jours spéciaux prévus. Dès que chaque jour a au moins 2 relevés (5 jours sur 7), les « jours restants » et le conseil de recharge de l'accueil l'utilisent.</li></ul>`],
+['🧾 Rapport du mois', `<p>Menu <b>🧾 Rapport du mois</b> : kWh achetés et dépensés, prix moyen payé, consommation, jour et jour de la semaine les plus gourmands, appareil le plus gourmand, jours spéciaux, coupures, budget et comparaison avec le mois précédent. Partagez-le sur WhatsApp, copiez le texte ou faites un PDF (« Imprimer / PDF » → « Enregistrer en PDF »).</p>`],
 ['📲 Installer l\'application', installHelp],
 ['🔑 Activation et code d\'accès', `<p>Chaque téléphone a son <b>code appareil</b> (ex : PL-7KQ2-M9XA), visible sur l'écran d'activation et dans les Réglages. Envoie-le sur WhatsApp au ${CONTACT_FMT} pour recevoir votre code d'activation, à coller une seule fois. Vous pouvez aussi scanner le QR code du vendeur. Le code ne fonctionne que sur votre téléphone.</p><p><b>Essai gratuit :</b> sur l'écran d'activation, touchez « Commencer l'essai gratuit » pour utiliser {app} pendant 48 h sans code (une seule fois par téléphone). À la fin, l'appli demande un code d'activation ; vos données sont conservées.</p>`.replace('{app}', APP)],
 ['❓ Questions fréquentes', `<ul><li><b>Les chiffres sont-ils officiels ?</b> La grille par défaut est celle publiée par la CRSE. Les consommations d'appareils sont des estimations ; vos relevés donnent la vérité.</li>
@@ -2467,6 +2713,9 @@ en: [
 ['🔔 Reminders', `<p>No notifications: reminders appear when you open the app (credit running out, tier limit, wait for the 1st, unusual day, old reading, budget, backup). Tap ✕ to hide one until tomorrow.</p>`],
 ['💰 Editing the tariff grid', `<p>Defaults are the official Senelec tariffs (CRSE grids, 1 January 2026). If prices change, edit tiers, VAT, municipal tax, fixed fee and stamp in <b>Settings → Tariff grid</b>, or reset to official prices.</p>`],
 ['💾 Backup and new phone', `<p>Data stays on your phone. Export a backup file regularly. On a new phone: install, request a new activation code, then import your file.</p>`],
+['📝 Daily log and special days', `<p>Menu <b>📝 Daily log</b> (or + → "Log my day"). Tick what is unusual: extra person(s), guests, house empty, heatwave, power cut (with its length). Optionally add appliances used: number of times (washing machine, iron…) or hours (AC, TV…). The app compares the estimate with what the meter really measured, sets special days aside for your normal week, and measures their real effect. You can also log an upcoming day for the forecast.</p>`],
+['📆 Weekly profile and forecast', `<p>Log your balance every day at the same time for 2 to 3 weeks: the app shows the average usage of each day of the week and forecasts your credit day by day. Once each day has at least 2 readings (5 days out of 7), the home screen's days left and top-up advice use it.</p>`],
+['🧾 Monthly report', `<p>kWh bought, money spent, average price, usage, heaviest days, hungriest appliance, special days, power cuts, budget and comparison with last month. Share on WhatsApp, copy, or save as PDF.</p>`],
 ['📲 Install the app', installHelp],
 ['🔑 Activation', `<p>Each phone has a <b>device code</b> (e.g. PL-7KQ2-M9XA). Send it on WhatsApp to ${CONTACT_FMT} to receive your activation code, or scan the seller's QR code.</p><p><b>Free trial:</b> on the activation screen, tap "Start the free trial" to use the app for 48 hours without a code (once per phone). Afterwards an activation code is required; your data is kept.</p>`]
 ],
@@ -2484,6 +2733,8 @@ wo: [
 ['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Scanner bi dina jàng itam <b>marque</b> ak <b>modèle</b>. Modèle bu ñu dencoon ci appli bi dina jël puissance bi moom kepp. Su puissance bi feeñul, bësal <b>🔎 Seet modèle bii ci internet</b>.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
 ['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
+['📝 Jaaréer bés bi', `<p>Ci <b>📝 Journal du jour</b>, bindal li soppiku ci bés bi : nit ñu yokku (misaal papa ci kër gi ci weekend), gan, kër gu amul kenn, tàng bu metti, kuraŋ bu dagg. Mën nga bind it jumtukaay yi nga jëfandikoo (ñaata yoon walla ñaata waxtu). Appli bi dina natt li bés yooyu di yokk, te jëfandikoo ko ci prévision bi.</p>`],
+['📆 Ayu-bés bi', `<p>Bindal sa solde bés bu nekk ci benn waxtu bi, diirub 2 ba 3 ayu-bés. Appli bi dina la won li bés bu nekk ci ayu-bés bi di lekk, te wax la kañ la sa crédit di jeex.</p>`],
 ['📲 Installer appli bi', installHelp],
 ['🔑 Activation', `<p>Telefon bu nekk am na <b>code appareil</b> (misaal PL-7KQ2-M9XA). Yónneel ko ci WhatsApp ci ${CONTACT_FMT} ngir jot sa code d'activation.</p><p><b>Essai gratuit :</b> ci écran d'activation bi, bësal « Tàmbali essai gratuit bi » ngir jëfandikoo appli bi 48 waxtu te amul code (benn yoon rekk ci telefon bu nekk). Su jeexee, dinañu la laaj code d'activation ; say done dañuy des.</p>`],
 ['ℹ️ Guide bu mat sëkk', `<p>Guide bu mat sëkk bi ci français ak ci anglais la nekk : soppil làkk wi ci Réglages ngir jàng ko.</p>`]
@@ -2552,6 +2803,92 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"nombre de fois": "number of times",
+"heures (pour les {n})": "hours (for all {n})",
+"heures": "hours",
+"Ajoutez d'abord vos appareils dans « Mes appareils ».": "First add your appliances in “My appliances”.",
+"Jour": "Day",
+"Vous pouvez aussi noter un jour à venir (ex : papa arrive samedi) : la prévision en tiendra compte.": "You can also log an upcoming day (e.g. dad arrives on Saturday): the forecast will take it into account.",
+"Ce jour-là…": "That day…",
+"Coupure de courant (heures, facultatif)": "Power cut (hours, optional)",
+"Appareils utilisés (facultatif)": "Appliances used (optional)",
+"Notez seulement ceux qui changent d'un jour à l'autre : machine à laver, clim, fer, ordinateur…": "Only log those that vary from day to day: washing machine, AC, iron, computer…",
+"Ces appareils ≈ <b>{k}</b> ce jour-là ({f}).": "These appliances ≈ <b>{k}</b> that day ({f}).",
+"Au quotidien": "Day to day",
+"Journal du jour": "Daily log",
+"Modifier aujourd'hui": "Edit today",
+"Noter ma journée": "Log my day",
+"Votre consommation change selon les jours : quelqu'un en plus à la maison, la machine à laver, la clim… Notez ici ce qui sort de l'ordinaire. L'appli met ces jours de côté pour calculer votre <b>semaine normale</b>, mesure leur effet réel et en tient compte dans la prévision.": "Your usage changes from day to day: someone extra at home, the washing machine, the AC… Log anything unusual here. The app sets these days aside to work out your <b>normal week</b>, measures their real effect and uses it in the forecast.",
+"Aucun jour noté pour l'instant.": "No day logged yet.",
+"coupure {h} h": "power cut {h} h",
+"Rien de spécial": "Nothing special",
+"Appareils notés ≈ {k}": "Logged appliances ≈ {k}",
+"Compteur : {k} ({f})": "Meter: {k} ({f})",
+"Jours à venir": "Upcoming days",
+"Jours notés": "Logged days",
+"Voir mon profil de la semaine": "See my weekly profile",
+"Profil de la semaine": "Weekly profile",
+"Notez votre solde <b>chaque jour à la même heure</b> (le soir avant de dormir, par exemple) pendant 2 à 3 semaines. L'appli calcule alors ce que consomme chaque jour de la semaine chez vous, et prévoit votre crédit jour par jour.": "Log your balance <b>every day at the same time</b> (e.g. in the evening before bed) for 2 to 3 weeks. The app then works out what each day of the week uses in your home, and forecasts your credit day by day.",
+"Pas encore assez de relevés quotidiens. Notez votre solde chaque jour : le profil apparaît dès les premiers jours complets.": "Not enough daily readings yet. Log your balance every day: the profile appears after the first complete days.",
+"{n} relevé(s)": "{n} reading(s)",
+"Ma semaine normale": "My normal week",
+"Moyenne des 12 dernières semaines, jours spéciaux mis à part · {n} jours complets": "Average over the last 12 weeks, special days set aside · {n} complete days",
+"moyenne": "average",
+"Consommation par jour de la semaine": "Usage by day of the week",
+"Barre pâle = moins de 2 relevés pour ce jour : à confirmer.": "Pale bar = fewer than 2 readings for this day: to be confirmed.",
+"Moyenne": "Average",
+"Coût": "Cost",
+"Écart": "Range",
+"Relevés": "Readings",
+"Le <b>{a}</b> est votre jour le plus gourmand : {ka}, soit {x} fois le {b} ({kb}). Cela coûte environ {f} de plus chaque semaine.": "<b>{a}</b> is your heaviest day: {ka}, {x} times {b} ({kb}). That costs about {f} more every week.",
+"Effet des jours spéciaux": "Effect of special days",
+"{n} jour(s) · {k}/jour en moyenne": "{n} day(s) · {k}/day on average",
+"Notez vos jours spéciaux dans le journal (quelqu'un en plus, invités, coupure…) pour voir combien ils vous coûtent vraiment.": "Log your special days (someone extra, guests, power cut…) to see what they really cost you.",
+"Prévision des 7 prochains jours": "Forecast for the next 7 days",
+"Aujourd'hui (reste de la journée)": "Today (rest of the day)",
+"≈ {k} · {f}": "≈ {k} · {f}",
+"épuisé": "run out",
+"crédit restant": "credit left",
+"Votre crédit devrait s'épuiser vers le <b>{d}</b>.": "Your credit should run out around <b>{d}</b>.",
+"Votre crédit tient au-delà des 2 prochains mois.": "Your credit lasts beyond the next 2 months.",
+"La prévision utilise votre profil de la semaine et les jours spéciaux prévus dans le journal.": "The forecast uses your weekly profile and the special days planned in the log.",
+"Profil encore incomplet : la page d'accueil garde la moyenne simple tant que chaque jour n'a pas au moins 2 relevés (5 jours sur 7).": "Profile still incomplete: the home screen keeps the simple average until each day has at least 2 readings (5 days out of 7).",
+"Rapport électricité": "Electricity report",
+"pour": "for",
+"{n} recharge(s)": "{n} top-up(s)",
+"Consommé (relevés)": "Used (readings)",
+"{k}/jour en moyenne": "{k}/day on average",
+"Jour le plus gourmand": "Heaviest day",
+"Jour de la semaine le plus gourmand": "Heaviest day of the week",
+"Appareil le plus gourmand": "Hungriest appliance",
+"Coupures notées": "Power cuts logged",
+"Budget": "Budget",
+"Par rapport à {m}": "Compared with {m}",
+"Rapport du mois": "Monthly report",
+"Prix moyen payé": "Average price paid",
+"Jours spéciaux notés": "Special days logged",
+"Partager sur WhatsApp": "Share on WhatsApp",
+"Copier le texte": "Copy the text",
+"Imprimer / PDF": "Print / PDF",
+"Pour un PDF : « Imprimer / PDF », puis choisissez « Enregistrer en PDF » comme imprimante.": "For a PDF: “Print / PDF”, then choose “Save as PDF” as the printer.",
+"Supprimer ce jour du journal ?": "Delete this day from the log?",
+"Rapport copié ✓": "Report copied ✓",
+"Choisissez un jour.": "Choose a day.",
+"Journée notée ✓ Appareils ≈ {k} ({f}).": "Day logged ✓ Appliances ≈ {k} ({f}).",
+"Journée notée ✓": "Day logged ✓",
+"Personne(s) en plus": "Extra person(s)",
+"Invités / fête": "Guests / party",
+"Maison vide / absents": "House empty / away",
+"Forte chaleur": "Heatwave",
+"Coupure de courant": "Power cut",
+"Le <b>{a}</b>, vous consommez {x} fois plus que le {b} ({ka} contre {kb}). Voir le <b>profil de la semaine</b>.": "On <b>{a}</b> you use {x} times more than on {b} ({ka} vs {kb}). See the <b>weekly profile</b>.",
+"<b>{d}</b> : journée chargée prévue (≈ {k}, soit {f}). Vérifiez que votre crédit suffit.": "<b>{d}</b>: busy day planned (≈ {k}, i.e. {f}). Check that your credit is enough.",
+"C'est environ {x} de plus qu'un jour normal.": "That's about {x} more than a normal day.",
+"Une journée particulière aujourd'hui (machine à laver, quelqu'un en plus, coupure…) ? <b>Notez-la</b> dans le journal.": "Anything unusual today (washing machine, someone extra, power cut…)? <b>Log it</b> in the daily log.",
+"Les prochains jours": "The next few days",
+"D'après votre profil de la semaine": "Based on your weekly profile",
+"Profil de la semaine en construction": "Weekly profile being built",
+"🏷️ = ce jour est toujours un jour spécial chez vous (ex : quelqu'un en plus chaque samedi) : c'est donc sa moyenne habituelle.": "🏷️ = this day is always a special day in your home (e.g. someone extra every Saturday): so this is its usual average.",
 "Compteur maison": "Home meter",
 "Exemple": "Example",
 "≈ 9 jours restants": "≈ 9 days left",
@@ -3229,6 +3566,28 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Journal du jour": "Jaaréer bés bi",
+"Profil de la semaine": "Ayu-bés bi",
+"Rapport du mois": "Rapport weer wi",
+"Noter ma journée": "Bindal sama bés",
+"Personne(s) en plus": "Nit ñu yokku",
+"Invités / fête": "Gan / xew",
+"Maison vide / absents": "Kër gi amul kenn",
+"Forte chaleur": "Tàng bu metti",
+"Coupure de courant": "Kuraŋ dagg na",
+"Moyenne": "Diggante",
+"Coût": "Njëg",
+"Jour": "Bés",
+"Jours à venir": "Bés yi di ñëw",
+"Jours notés": "Bés yi ñu bind",
+"épuisé": "jeex na",
+"crédit restant": "crédit bi des",
+"Partager sur WhatsApp": "Séddoo ko ci WhatsApp",
+"Copier le texte": "Duppi mbind mi",
+"Imprimer / PDF": "Imprimer / PDF",
+"Les prochains jours": "Bés yi di ñëw",
+"Journée notée ✓": "Bés bi bindu na ✓",
+"Rien de spécial": "Dara amul",
 "Fermer": "Tëj",
 "Conseil de recharge": "Xelal ngir recharge",
 "Notez le solde de votre compteur (et ajoutez vos appareils) : l'appli vous dira quand recharger et combien.": "Bindal solde bu compteur bi (te yokk say jumtukaay) : appli bi dina la wax kañ ngay recharger ak ñaata.",
