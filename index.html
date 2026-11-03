@@ -21,7 +21,7 @@
   ----------------------------------------------------------------------------
   • Fichier unique : HTML + CSS + JavaScript embarqués (aucune dépendance).
   • 100 % local : toutes les données restent dans le navigateur (localStorage).
-  • Hors ligne, sans compte, sans serveur. Sauvegarde / restauration par fichier.
+  • Hors ligne, sans compte, sans serveur. Copies de secours automatiques sur le téléphone + sauvegarde / restauration par fichier.
   • Activation par code lié à l'appareil (signature ECDSA, codes générés
     avec Thousand Admin). L'appli ne contient que la clé PUBLIQUE.
   • Installable (PWA) : manifest.webmanifest + sw.js.
@@ -674,7 +674,83 @@ let D = load();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(D)); }
   catch (e) { toast(t('Sauvegarde impossible : stockage du navigateur plein ou bloqué.'), 'err'); }
+  SNAP.soon();
 }
+
+/* ---------- Copies de secours automatiques (sur ce téléphone, sans Internet ni serveur) ----------
+   • À chaque modification, une copie des données est écrite dans une 2e mémoire du navigateur
+     (IndexedDB), séparée du stockage principal (localStorage).
+   • Une copie par jour est gardée sur les SNAP_DAYS derniers jours, plus une copie « avant » chaque
+     restauration, import ou effacement (pour pouvoir revenir en arrière).
+   • Au démarrage, si le stockage principal a disparu ou est abîmé, l'appli se restaure seule.
+   • Limite : un effacement complet des données du site ou la perte du téléphone efface aussi ces
+     copies → le fichier exporté (Réglages → Exporter) reste la vraie sauvegarde hors du téléphone. */
+const SNAP_DAYS = 14, SNAP_PRE = 5;
+const SNAP = (() => {
+  const DB = 'powerlog-secours', ST = 'snaps';
+  let timer = 0, lastJson = '';
+  const open = () => new Promise((res, rej) => {
+    try { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => { try { r.result.createObjectStore(ST); } catch (e) {} }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }
+    catch (e) { rej(e); }
+  });
+  const tx = (mode, fn) => open().then(db => new Promise((res, rej) => {
+    let out; const x = db.transaction(ST, mode), st = x.objectStore(ST);
+    try { out = fn(st); } catch (e) { db.close(); return rej(e); }
+    x.oncomplete = () => { db.close(); res(out && 'result' in out ? out.result : out); };
+    x.onerror = x.onabort = () => { db.close(); rej(x.error); };
+  }));
+  const get = k => tx('readonly', st => st.get(k)).catch(() => null);
+  const keys = () => tx('readonly', st => st.getAllKeys()).catch(() => []);
+  const countOf = d => ({r: (d.recharges || []).length, l: (d.readings || []).length, a: (d.appliances || []).length, j: (d.journal || []).length});
+  const total = n => n.r + n.l + n.a + n.j;
+  async function write(force) {
+    clearTimeout(timer); timer = 0;
+    let json; try { json = JSON.stringify(D); } catch (e) { return; }
+    if (!force && json === lastJson) return;
+    lastJson = json;
+    const n = countOf(D), rec = {t: Date.now(), json, n};
+    try {
+      const old = (await keys()).filter(k => String(k).startsWith('day:')).sort();
+      await tx('readwrite', st => {
+        st.put(rec, 'latest');
+        // Copie du jour : jamais écrasée par des données vides (ex. après « Tout effacer »)
+        if (total(n) > 0) st.put(rec, 'day:' + today());
+        const keep = new Set(old.concat(total(n) > 0 ? ['day:' + today()] : []).sort().slice(-SNAP_DAYS));
+        old.forEach(k => { if (!keep.has(k)) st.delete(k); });
+      });
+    } catch (e) {}
+  }
+  return {
+    soon() { clearTimeout(timer); timer = setTimeout(write, 1200); },
+    flush() { if (timer) write(); },
+    // Copie « avant » une opération qui remplace ou efface les données
+    async keep(kind) {
+      try {
+        const json = JSON.stringify(D), n = countOf(D); if (!total(n)) return;
+        const old = (await keys()).filter(k => String(k).startsWith('pre:')).sort();
+        await tx('readwrite', st => { st.put({t: Date.now(), json, n, kind}, 'pre:' + Date.now()); old.slice(0, Math.max(0, old.length - SNAP_PRE + 1)).forEach(k => st.delete(k)); });
+      } catch (e) {}
+    },
+    async list() {
+      const ks = (await keys()).filter(k => k !== 'latest'), out = [];
+      for (const k of ks) { const r = await get(k); if (r && r.json) out.push({key: k, t: r.t, n: r.n || {r: 0, l: 0, a: 0, j: 0}, kind: String(k).startsWith('pre:') ? (r.kind || 'restore') : 'day'}); }
+      return out.sort((a, b) => b.t - a.t);
+    },
+    get,
+    // Au démarrage : stockage principal absent ou illisible → on reprend la dernière copie
+    async heal() {
+      let raw; try { raw = localStorage.getItem(KEY); } catch (e) { return false; }
+      if (raw) { try { JSON.parse(raw); lastJson = raw; return false; } catch (e) {} }
+      const r = await get('latest');
+      const src = r && r.json && total(r.n || {r: 0, l: 0, a: 0, j: 0}) > 0 ? r : (await this.list())[0];
+      if (!src) return false;
+      const rec = src.json ? src : await get(src.key);
+      try { localStorage.setItem(KEY, rec.json); D = load(); lastJson = JSON.stringify(D); return true; } catch (e) { return false; }
+    }
+  };
+})();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') SNAP.flush(); });
+window.addEventListener('pagehide', () => SNAP.flush());
 const meter = () => D.meters.find(m => m.id === D.settings.cur) || D.meters[0];
 const profOf = m => D.settings.profiles[(m || meter()).profile] || D.settings.profiles.DPP || OFFICIAL.DPP;
 const appsOf = (mid = meter().id) => D.appliances.filter(a => a.meterId === mid);
@@ -2355,7 +2431,10 @@ views.reglages = () => {
   <div class="card"><h2>🕵️ ${t('Compteur')}</h2><form class="stack mt" data-form="pulse">${field(t('Constante du voyant (imp/kWh)'), numInp('pulse', s.pulse), t('Inscrite sur le compteur, ex : « 1600 imp/kWh ». Sert au mode détective.'))}${field(t('Ma journée se termine à'), sel('dayEnd', [...Array(13)].map((_, h) => [h, h ? t('{h} h du matin', {h}) : t('minuit (par défaut)')]), num(s.dayEnd)), t('Vous vous couchez tard ? Avec 5 h, ce que vous consommez entre minuit et 5 h compte pour la veille (graphiques, profil de la semaine, journal).'))}<button class="btn">${t('Enregistrer')}</button></form></div>
   <div class="card"><h2>💾 ${t('Sauvegarde')}</h2><p class="sub mt-s">${s.lastBackup ? t('Dernière sauvegarde : {d}', {d: new Date(s.lastBackup).toLocaleDateString(LOCALE())}) : t('Aucune sauvegarde pour l\'instant.')}</p>
     <div class="flex wrap mt"><button class="btn btn-primary" data-action="export">⬇️ ${t('Exporter mes données')}</button><label class="btn" style="cursor:pointer">⬆️ ${t('Importer')}<input type="file" accept=".json,application/json" data-live="import" hidden></label></div>
-    <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoyez-le-vous sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p></div>
+    <p class="hint mt">${t('Le fichier contient tout : compteurs, appareils, recharges, relevés, grilles. Envoyez-le-vous sur WhatsApp ou par e-mail pour le garder en sécurité.')}</p>
+    <h3 class="mt-l">🛡 ${t('Copies automatiques')}</h3>
+    <p class="sub mt-s">${t('À chaque modification, une copie est gardée sur ce téléphone, sans Internet (une par jour, {n} derniers jours). Si les données principales disparaissent, l\'appli les récupère seule.', {n: SNAP_DAYS})}</p>
+    <button class="btn btn-sm mt-s" data-action="snaps">🕘 ${t('Restaurer une copie automatique')}</button></div>
   <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span>${LIC_OK ? `<span class="badge b-green">✓ ${t('Activée')}</span>` : `<span class="badge b-amber">🎁 ${t('Essai gratuit')}</span>`}</div>${LIC_OK ? '' : `<div class="kv"><span>${t('Temps restant')}</span><b>${fmtLeft(trialInfo().left)}</b></div>`}<div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${LIC_OK && lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
     <div class="flex wrap mt">${LIC_OK ? '' : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div>${tlBrand(1)}</div>
   <div class="card"><h2>📲 ${t("Installer l'application")}</h2><div class="mt-s">${TLI.html(APP, 'btn btn-primary')}</div><div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
@@ -2660,7 +2739,22 @@ const actions = {
     if (r === 'cancel') return;
     D.settings.lastBackup = Date.now(); save(); toast(r === 'shared' ? t('Sauvegarde envoyée ✓') : t('Sauvegarde téléchargée 💾')); render();
   },
-  wipe: () => { if (!confirm(t('Effacer TOUTES les données (compteurs, appareils, recharges, relevés) ? Pensez à exporter avant.'))) return; const l = D.settings.lang; D = defaults(); D.settings.lang = l; save(); render(); toast(t('Données effacées')); }
+  snaps: async () => {
+    openModal('🕘 ' + t('Copies automatiques'), `<p class="sub">${t('Chargement…')}</p>`);
+    const L = await SNAP.list(), body = $('#modal-body'); if (!body) return;
+    const kinds = {day: t('Copie du jour'), restore: t('Avant restauration'), import: t('Avant import'), wipe: t('Avant effacement')};
+    body.innerHTML = (L.length ? `<div class="list">${L.map(s => `<div class="kv" style="align-items:center;gap:10px"><span><b>${esc(new Date(s.t).toLocaleString(LOCALE(), {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}))}</b><br><span class="hint">${kinds[s.kind] || kinds.day} · ${t('{r} recharges · {l} relevés · {a} appareils', {r: s.n.r, l: s.n.l, a: s.n.a})}</span></span><button class="btn btn-sm btn-primary" data-action="snap-restore" data-id="${esc(String(s.key))}">${t('Restaurer')}</button></div>`).join('')}</div>`
+      : `<p class="sub">${t('Aucune copie automatique pour l\'instant.')}</p>`)
+      + `<p class="hint mt">${t('Ces copies restent sur ce téléphone : en cas de perte du téléphone ou d\'effacement complet des données du site, seul le fichier exporté vous protège.')}</p>`;
+  },
+  'snap-restore': async id => {
+    const r = await SNAP.get(id); if (!r || !r.json) return toast(t('Copie introuvable.'), 'err');
+    if (!confirm(t('Remplacer les données actuelles par cette copie ? Les données actuelles sont gardées dans une copie « Avant restauration ».'))) return;
+    await SNAP.keep('restore');
+    try { localStorage.setItem(KEY, r.json); } catch (e) { return toast(t('Sauvegarde impossible : stockage du navigateur plein ou bloqué.'), 'err'); }
+    D = load(); save(); applyTheme(); buildNav(); closeModal(); render(); toast(t('Copie restaurée ✓'));
+  },
+  wipe: async () => { if (!confirm(t('Effacer TOUTES les données (compteurs, appareils, recharges, relevés) ? Pensez à exporter avant.'))) return; await SNAP.keep('wipe'); const l = D.settings.lang; D = defaults(); D.settings.lang = l; save(); render(); toast(t('Données effacées')); }
 };
 // Changements (listes déroulantes, cases à cocher)
 const changes = {
@@ -2739,6 +2833,7 @@ const live = {
       // Essai gratuit : pas de sauvegarde venant d'un autre appareil (sinon on pourrait enchaîner les essais)
       if (!LIC_OK && !(o && o.dev && o.dev === getLic().dev)) { el.value = ''; return alert(t("Pendant l'essai gratuit, seules les sauvegardes faites sur ce téléphone peuvent être importées. Activez {app} pour récupérer une sauvegarde d'un autre appareil.", {app: APP})); }
       if (!confirm(t('Remplacer les données actuelles par celles du fichier ?'))) return;
+      await SNAP.keep('import');
       localStorage.setItem(KEY, JSON.stringify(d)); D = load(); save(); applyTheme(); buildNav(); render(); toast(t('Données importées ✓'));
     } catch (e) { toast(t('Fichier invalide.'), 'err'); }
     el.value = '';
@@ -2865,7 +2960,8 @@ fr: [
 ['💾 Sauvegarde, changement de téléphone', `<ul><li>Toutes vos données restent <b>sur votre téléphone</b>, rien n'est envoyé sur Internet.</li>
 <li>Réglages → <b>Exporter mes données</b> créez un fichier. Envoyez-le-vous (WhatsApp, e-mail) au moins une fois par mois.</li>
 <li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
-<li>Vider les données du navigateur efface tout : gardez toujours une sauvegarde récente.</li></ul>`],
+<li><b>Copies automatiques</b> : à chaque modification, l'appli garde aussi une copie sur le téléphone (une par jour, 14 jours). Si les données disparaissent, elle les récupère seule ; Réglages → <b>Restaurer une copie automatique</b> permet aussi de revenir à un jour précédent.</li>
+<li>Vider complètement les données du site ou perdre le téléphone efface aussi ces copies : gardez toujours un fichier exporté récent.</li></ul>`],
 ['📝 Journal du jour et jours spéciaux', `<p>Menu <b>📝 Journal du jour</b> (ou le bouton + → « Noter ma journée »). Pour un jour donné, cochez ce qui sort de l'ordinaire : <b>personne(s) en plus</b> (ex : papa à la maison le week-end), invités, maison vide, forte chaleur, <b>coupure</b> (avec sa durée). Indiquez aussi, si vous voulez, les appareils utilisés : <b>nombre de fois</b> pour la machine à laver, le fer, la bouilloire… et <b>heures</b> pour la clim, la télé, l'ordinateur…</p><ul><li>L'appli estime ce que ces appareils ont consommé et le compare à ce que le compteur a vraiment mesuré ce jour-là.</li><li>Les jours spéciaux sont mis à part pour calculer votre semaine normale, et l'appli mesure leur effet réel (ex : « Personne en plus : +75 % »).</li><li>Vous pouvez noter un <b>jour à venir</b> : la prévision et les rappels en tiennent compte.</li><li><b>Corriger un jour</b> : si le chiffre calculé ne correspond pas à la réalité (relevé fait à une heure inhabituelle), saisissez la vraie consommation du jour ; l'écart est reporté sur les jours voisins pour que le total reste juste.</li><li><b>Couche-tard ?</b> Réglages → « Ma journée se termine à » (ex : 5 h) : ce que vous consommez après minuit compte pour la veille.</li></ul>`],
 ['📆 Profil de la semaine et prévision', `<p>Notez votre solde <b>chaque jour à la même heure</b> (le soir avant de dormir, par exemple) pendant 2 à 3 semaines. L'appli calcule la consommation moyenne de chaque jour de la semaine (12 dernières semaines), avec le coût, l'écart entre le jour le plus bas et le plus haut, et le nombre de relevés.</p><ul><li>Si un jour est toujours spécial chez vous (quelqu'un en plus chaque samedi), sa moyenne habituelle l'inclut (🏷️).</li><li><b>Prévision</b> : le crédit restant est consommé jour par jour selon ce profil et les jours spéciaux prévus. Dès que chaque jour a au moins 2 relevés (5 jours sur 7), les « jours restants » et le conseil de recharge de l'accueil l'utilisent.</li></ul>`],
 ['🧾 Rapport du mois', `<p>Menu <b>🧾 Rapport du mois</b> : kWh achetés et dépensés, prix moyen payé, consommation, jour et jour de la semaine les plus gourmands, appareil le plus gourmand, jours spéciaux, coupures, budget et comparaison avec le mois précédent. Partagez-le sur WhatsApp, copiez le texte ou faites un PDF (« Imprimer / PDF » → « Enregistrer en PDF »).</p>`],
@@ -2897,7 +2993,7 @@ en: [
 ['👥 Meters and bill sharing', `<p>Add several meters (home, shop…). Bill sharing splits the month's amount by each person's appliances and prepares a WhatsApp message.</p>`],
 ['🔔 Reminders', `<p>No notifications: reminders appear when you open the app (credit running out, tier limit, wait for the 1st, unusual day, old reading, budget, backup). Tap ✕ to hide one until tomorrow.</p>`],
 ['💰 Editing the tariff grid', `<p>Defaults are the official Senelec tariffs (CRSE grids, 1 January 2026). If prices change, edit tiers, VAT, municipal tax, fixed fee and stamp in <b>Settings → Tariff grid</b>, or reset to official prices.</p>`],
-['💾 Backup and new phone', `<p>Data stays on your phone. Export a backup file regularly. On a new phone: install, request a new activation code, then import your file.</p>`],
+['💾 Backup and new phone', `<p>Data stays on your phone. Export a backup file regularly. On a new phone: install, request a new activation code, then import your file.</p><p><b>Automatic copies</b>: every change is also copied on the phone (one per day, 14 days). If data disappears, the app recovers it by itself; Settings → <b>Restore an automatic copy</b> lets you go back to an earlier day. Fully erasing the site data or losing the phone also erases these copies: always keep a recent exported file.</p>`],
 ['📝 Daily log and special days', `<p>Menu <b>📝 Daily log</b> (or + → "Log my day"). Tick what is unusual: extra person(s), guests, house empty, heatwave, power cut (with its length). Optionally add appliances used: number of times (washing machine, iron…) or hours (AC, TV…). The app compares the estimate with what the meter really measured, sets special days aside for your normal week, and measures their real effect. You can also log an upcoming day for the forecast.</p>`],
 ['📆 Weekly profile and forecast', `<p>Log your balance every day at the same time for 2 to 3 weeks: the app shows the average usage of each day of the week and forecasts your credit day by day. Once each day has at least 2 readings (5 days out of 7), the home screen's days left and top-up advice use it.</p>`],
 ['🧾 Monthly report', `<p>kWh bought, money spent, average price, usage, heaviest days, hungriest appliance, special days, power cuts, budget and comparison with last month. Share on WhatsApp, copy, or save as PDF.</p>`],
@@ -2917,7 +3013,7 @@ wo: [
 ['💡 Xelal ngir recharge', `<p>Ci écran bu njëkk bi, carte <b>💡 Xelal ngir recharge</b> dina la wax <b>kañ</b> ngay recharger (benn fan balaa crédit bi jeex) ak <b>ñaata</b> (ñu yokk ko ba 500 F).</p><ul><li>Su sa crédit di jeex balaa weer wi jeex, dina la ne recharger li doy ba 1 bi, te def recharge bu weer wi ci 1 bi : tranche yi dañuy delloo ci zéro, sa kWh yu jëkk dañuy gën a yomb.</li><li>Lu ko moy, dina la digal recharge bu mat lu tollu ci benn weer.</li><li>Lu nga gën a bind sa solde, xelal bi dina gën a leer.</li></ul>`],
 ['📷 Scanner étiquette jumtukaay', `<p>Ci formulaire jumtukaay bi, bësal <b>📷 Scanner étiquette bi</b> : caméra bi dina ubbiku ci biir appli bi. Defal étiquette bi (ci ginaaw walla ci suuf) ci biir cadre bi te bësal bouton bu weex bi. Mën nga taal lampe bi 🔦 walla tànn foto ci galerie bi 🖼️. Appli bi dina jàng puissance bi te bind ko ci « Puissance (W) ».</p><ul><li>Dafay seet « W » walla « kW ». Su amul lu dul « A », dafay xayma : <b>W = 220 V × A</b>.</li><li>Leer bu baax, foto bu set te jege.</li><li>Scanner bi dina jàng itam <b>marque</b> ak <b>modèle</b>. Modèle bu ñu dencoon ci appli bi dina jël puissance bi moom kepp. Su puissance bi feeñul, bësal <b>🔎 Seet modèle bii ci internet</b>.</li><li>Bu jëkk bi, internet war na am (≈ 5 Mo), bu ko defee dina dox te internet amul.</li><li>Seetal lim bi balaa ngay denc.</li></ul>`],
 ['🕵️ Mode détective', `<ol><li>Seetal leer bi ci kontöör bi (« imp/kWh »).</li><li>Fajal lépp te natt « base » bi : bës butoŋ bi saa yu leer bi fàqee, 30 saa.</li><li>Taalal <b>benn</b> jumtukaay rekk te natt ko.</li><li>Su ëppee lool, jumtukaay boobu moo am jafe-jafe.</li></ol>`],
-['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p>`],
+['💾 Sauvegarde', `<p>Say done yépp ci sa telefon lañu nekk. Def « Exporter » benn yoon ci weer wi te yónnee sa bopp fichier bi (WhatsApp, e-mail).</p><p><b>Copie yu otomatik</b> : saa yu nga soppi dara, appli bi dina denc benn copie ci telefon bi (benn ci bés bu nekk, 14 fan). Bu done yi réeree, appli bi dina leen delloo. Réglages → <b>Delloo benn copie otomatik</b> ngir dellu ci benn bés bu weesu.</p>`],
 ['📝 Jaaréer bés bi', `<p>Ci <b>📝 Journal du jour</b>, bindal li soppiku ci bés bi : nit ñu yokku (misaal papa ci kër gi ci weekend), gan, kër gu amul kenn, tàng bu metti, kuraŋ bu dagg. Mën nga bind it jumtukaay yi nga jëfandikoo (ñaata yoon walla ñaata waxtu). Appli bi dina natt li bés yooyu di yokk, te jëfandikoo ko ci prévision bi.</p>`],
 ['📆 Ayu-bés bi', `<p>Bindal sa solde bés bu nekk ci benn waxtu bi, diirub 2 ba 3 ayu-bés. Appli bi dina la won li bés bu nekk ci ayu-bés bi di lekk, te wax la kañ la sa crédit di jeex.</p>`],
 ['📲 Installer appli bi', installHelp],
@@ -2988,6 +3084,22 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Copies automatiques": "Automatic copies",
+"À chaque modification, une copie est gardée sur ce téléphone, sans Internet (une par jour, {n} derniers jours). Si les données principales disparaissent, l'appli les récupère seule.": "Every change is also copied on this phone, without Internet (one per day, last {n} days). If the main data disappears, the app recovers it by itself.",
+"Restaurer une copie automatique": "Restore an automatic copy",
+"Chargement…": "Loading…",
+"Copie du jour": "Daily copy",
+"Avant restauration": "Before restore",
+"Avant import": "Before import",
+"Avant effacement": "Before erase",
+"{r} recharges · {l} relevés · {a} appareils": "{r} top-ups · {l} readings · {a} appliances",
+"Restaurer": "Restore",
+"Aucune copie automatique pour l'instant.": "No automatic copy yet.",
+"Ces copies restent sur ce téléphone : en cas de perte du téléphone ou d'effacement complet des données du site, seul le fichier exporté vous protège.": "These copies stay on this phone: if the phone is lost or the site data is fully erased, only the exported file protects you.",
+"Copie introuvable.": "Copy not found.",
+"Remplacer les données actuelles par cette copie ? Les données actuelles sont gardées dans une copie « Avant restauration ».": "Replace the current data with this copy? The current data is kept in a “Before restore” copy.",
+"Copie restaurée ✓": "Copy restored ✓",
+"Données récupérées automatiquement depuis la copie de secours ✓": "Data automatically recovered from the backup copy ✓",
 "Console de jeux (PS5, Xbox…)": "Game console (PS5, Xbox…)",
 "Consommation réelle de ce jour (kWh, correction)": "Actual usage for this day (kWh, correction)",
 "Calculé par l'appli : {k}. Si vous connaissez le vrai chiffre (ex : relevés le soir et le lendemain soir), saisissez-le : l'écart est reporté sur les jours voisins. Laissez vide pour garder le calcul.": "Calculated by the app: {k}. If you know the real figure (e.g. readings one evening and the next), enter it: the difference is moved to the neighbouring days. Leave empty to keep the calculation.",
@@ -3760,6 +3872,22 @@ const I18N = {
 "Appareils": "Appliances"
 },
 "wo": {
+"Copies automatiques": "Copie yu otomatik",
+"À chaque modification, une copie est gardée sur ce téléphone, sans Internet (une par jour, {n} derniers jours). Si les données principales disparaissent, l'appli les récupère seule.": "Saa yu nga soppi dara, appli bi dina denc benn copie ci telefon bi, te soxlawul Internet (benn ci bés bu nekk, {n} fan yu mujj). Bu done yi réeree, appli bi dina leen delloo moom ci boppam.",
+"Restaurer une copie automatique": "Delloo benn copie otomatik",
+"Chargement…": "Mu ngi yeb…",
+"Copie du jour": "Copie bés bi",
+"Avant restauration": "Balaa delloo",
+"Avant import": "Balaa importer",
+"Avant effacement": "Balaa far",
+"{r} recharges · {l} relevés · {a} appareils": "{r} recharge · {l} relevé · {a} masin",
+"Restaurer": "Delloo",
+"Aucune copie automatique pour l'instant.": "Amul copie otomatik ba léegi.",
+"Ces copies restent sur ce téléphone : en cas de perte du téléphone ou d'effacement complet des données du site, seul le fichier exporté vous protège.": "Copie yii ci telefon bi lañu des : bu telefon bi réeree walla nga far done yépp, fichier bi nga exporter rekk moo lay aar.",
+"Copie introuvable.": "Gisuñu copie bi.",
+"Remplacer les données actuelles par cette copie ? Les données actuelles sont gardées dans une copie « Avant restauration ».": "Ndax nga bëgg wecci done yi am léegi ak copie bii ? Done yi am léegi dinañu leen denc ci copie « Balaa delloo ».",
+"Copie restaurée ✓": "Copie bi delloo nañu ko ✓",
+"Données récupérées automatiquement depuis la copie de secours ✓": "Done yi delloo nañu leen ci copie bu aar bi ✓",
 "Console de jeux (PS5, Xbox…)": "Console (PS5, Xbox…)",
 "Ma journée se termine à": "Sama bés dafay jeex ci",
 "Journal du jour": "Jaaréer bés bi",
@@ -4442,6 +4570,7 @@ const I18N = {
 (async function init() {
   const v = location.hash.slice(1);
   state.view = views[v] ? v : 'home';
+  const healed = await SNAP.heal();
   applyTheme();
   const l = getLic();
   if (l.sig) LIC_OK = await checkSig(l.sig);
@@ -4449,7 +4578,9 @@ const I18N = {
   if (!LIC_OK && !trialInfo().active) { renderLock(); return; }
   if (!LIC_OK) { enterTrial(false); return; }
   buildNav(); render();
+  if (healed) toast(t('Données récupérées automatiquement depuis la copie de secours ✓'));
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  SNAP.soon();
 })();
 </script>
 </body>
