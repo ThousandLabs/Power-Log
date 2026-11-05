@@ -877,7 +877,8 @@ function consumption(mid = meter().id) {
   const fixes = {}, auto = {};
   (D.journal || []).filter(j => j.meterId === mid && j.fix !== '' && j.fix != null && isFinite(+j.fix)).forEach(j => { fixes[j.day] = Math.max(0, +j.fix); });
   Object.entries(fixes).forEach(([d, fix]) => {
-    if (daily[d] == null) return;
+    // Jour sans relevé autour (ex : solde du lendemain pas encore noté) : la valeur du code 813 suffit
+    if (daily[d] == null) { daily[d] = fix; cover[d] = 1; return; }
     auto[d] = daily[d];
     let delta = daily[d] - fix;
     const ivs = new Set(parts.filter(p => p.k === d).map(p => p.n));
@@ -2334,7 +2335,7 @@ views.journal = () => {
     const tags = (j.tags || []).map(k => TAGK[k] ? TAGK[k].e + ' ' + t(TAGK[k].l) : '').filter(Boolean);
     if (num(j.cut) > 0) tags.push('🚫 ' + t('coupure {h} h', {h: nf(j.cut, 1)}));
     const usesTxt = (j.uses || []).map(u => { const a = D.appliances.find(x => x.id === u.appId); return a ? `${appName(a)} ${u.n != null ? '×' + nf(u.n) : nf(u.h, 1) + ' h'}` : ''; }).filter(Boolean).join(', ');
-    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${(() => { const st = j.day <= td && real == null ? dayStatus(C, j.day) : '', bits = [est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : '', real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) + (C.fixes[j.day] != null ? ' ✏️ ' + t('corrigé (calcul : {k})', {k: K(C.auto[j.day] || 0)}) : '') : st].filter(Boolean); return bits.length ? `<small class="hint" style="display:block">${bits.join(' · ')}</small>` : ''; })()}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
+    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${(() => { const st = j.day <= td && real == null ? dayStatus(C, j.day) : '', bits = [est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : '', real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) + (C.fixes[j.day] != null && C.auto[j.day] != null ? ' ✏️ ' + t('corrigé (calcul : {k})', {k: K(C.auto[j.day] || 0)}) : '') : st].filter(Boolean); return bits.length ? `<small class="hint" style="display:block">${bits.join(' · ')}</small>` : ''; })()}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
   };
   if (fut.length) h += `<div class="section"><div class="section-title">${t('Jours à venir')}</div><div class="card"><div class="list">${fut.slice().reverse().map(line).join('')}</div></div></div>`;
   h += `<div class="section"><div class="section-title">${t('Jours notés')}</div><div class="card"><div class="list">${past.slice(0, 60).map(line).join('')}</div></div></div>`;
