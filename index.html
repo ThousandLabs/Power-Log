@@ -2313,6 +2313,16 @@ window.jPreview = function (f) {
   const j = journalFromForm(f), k = journalKwh(j), el = $('#jEst'); if (!el) return;
   el.innerHTML = k > 0 ? t('Ces appareils ≈ <b>{k}</b> ce jour-là ({f}).', {k: K(k), f: F(k * curPrice())}) : '';
 };
+// Pourquoi un jour passé n'a pas encore de consommation affichée (journal)
+function dayStatus(C, day) {
+  const off = dayOff(), a = parseDT(day + 'T00:00') + off, b = a + DAY, cov = C.cover[day] || 0, v = C.daily[day];
+  const lastT = C.last ? C.last.t : -Infinity;
+  if (C.issues.some(x => x.a.t < b && x.b.t > a)) return t('Relevés incohérents ce jour-là (solde plus élevé que le précédent) : vérifiez vos relevés ou une recharge oubliée.');
+  if (rechOf(meter().id).some(r => (r.before === '' || r.before == null) && parseDT(r.date) > a - DAY && parseDT(r.date) < b + DAY)) return t('Calcul impossible : une recharge sans « solde avant » coupe la chaîne. Saisissez le code 813 pour ce jour.');
+  const part = cov > 0 && v != null ? t('Calcul partiel : {k} sur {h} h', {k: K(v), h: nf(cov * 24, 0)}) + ' · ' : '';
+  if (lastT < b) return part + (off ? t('En attente : votre journée se termine à {h} h (réglage). Relevé après {h} h ou code 813 du lendemain.', {h: off / 3600000}) : t('En attente du relevé du lendemain ou du code 813.'));
+  return part + t('Pas assez de relevés autour de ce jour : saisissez le code 813.');
+}
 views.journal = () => {
   const J = journalOf(), C = consumption(), p = curPrice(), td = logDay(), tj = journalDay(td);
   let h = topbar() + pageHead(t('Au quotidien'), t('Journal du jour'), `<button class="btn btn-primary" data-action="add-journal">📝 ${tj ? t('Modifier aujourd\'hui') : t('Noter ma journée')}</button>`);
@@ -2324,7 +2334,7 @@ views.journal = () => {
     const tags = (j.tags || []).map(k => TAGK[k] ? TAGK[k].e + ' ' + t(TAGK[k].l) : '').filter(Boolean);
     if (num(j.cut) > 0) tags.push('🚫 ' + t('coupure {h} h', {h: nf(j.cut, 1)}));
     const usesTxt = (j.uses || []).map(u => { const a = D.appliances.find(x => x.id === u.appId); return a ? `${appName(a)} ${u.n != null ? '×' + nf(u.n) : nf(u.h, 1) + ' h'}` : ''; }).filter(Boolean).join(', ');
-    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${est > 0 || real != null ? `<small class="hint" style="display:block">${est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : ''}${est > 0 && real != null ? ' · ' : ''}${real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) + (C.fixes[j.day] != null ? ' ✏️ ' + t('corrigé (calcul : {k})', {k: K(C.auto[j.day] || 0)}) : '') : ''}</small>` : ''}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
+    return `<div class="li"><div class="li-ic">${j.day > td ? '📅' : '📝'}</div><div class="g"><b>${esc(dayName(j.day))}</b><small>${esc([tags.join(' · '), usesTxt, j.note].filter(Boolean).join(' — ')) || t('Rien de spécial')}</small>${(() => { const st = j.day <= td && real == null ? dayStatus(C, j.day) : '', bits = [est > 0 ? t('Appareils notés ≈ {k}', {k: K(est)}) : '', real != null ? t('Compteur : {k} ({f})', {k: K(real), f: F(real * p)}) + (C.fixes[j.day] != null ? ' ✏️ ' + t('corrigé (calcul : {k})', {k: K(C.auto[j.day] || 0)}) : '') : st].filter(Boolean); return bits.length ? `<small class="hint" style="display:block">${bits.join(' · ')}</small>` : ''; })()}</div><button class="icon-btn" data-action="edit-journal" data-id="${j.id}" aria-label="${esc(t('Modifier'))}">${icon('edit', 17)}</button></div>`;
   };
   if (fut.length) h += `<div class="section"><div class="section-title">${t('Jours à venir')}</div><div class="card"><div class="list">${fut.slice().reverse().map(line).join('')}</div></div></div>`;
   h += `<div class="section"><div class="section-title">${t('Jours notés')}</div><div class="card"><div class="list">${past.slice(0, 60).map(line).join('')}</div></div></div>`;
@@ -3135,6 +3145,12 @@ const I18N = {
 "Rien de spécial": "Nothing special",
 "Appareils notés ≈ {k}": "Logged appliances ≈ {k}",
 "Compteur : {k} ({f})": "Meter: {k} ({f})",
+"Relevés incohérents ce jour-là (solde plus élevé que le précédent) : vérifiez vos relevés ou une recharge oubliée.": "Inconsistent readings that day (balance higher than the previous one): check your readings or a missing top-up.",
+"Calcul impossible : une recharge sans « solde avant » coupe la chaîne. Saisissez le code 813 pour ce jour.": "Cannot calculate: a top-up without a \"balance before\" breaks the chain. Enter the 813 code value for this day.",
+"Calcul partiel : {k} sur {h} h": "Partial calculation: {k} over {h} h",
+"En attente : votre journée se termine à {h} h (réglage). Relevé après {h} h ou code 813 du lendemain.": "Waiting: your day ends at {h} am (setting). Reading after {h} am or next day's 813 code.",
+"En attente du relevé du lendemain ou du code 813.": "Waiting for the next day's reading or the 813 code.",
+"Pas assez de relevés autour de ce jour : saisissez le code 813.": "Not enough readings around this day: enter the 813 code value.",
 "Jours à venir": "Upcoming days",
 "Jours notés": "Logged days",
 "Voir mon profil de la semaine": "See my weekly profile",
