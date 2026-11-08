@@ -673,8 +673,10 @@ function load() {
 let D = load();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(D)); }
-  catch (e) { toast(t('Sauvegarde impossible : stockage du navigateur plein ou bloqué.'), 'err'); }
+  catch (e) { toast(t(tlFull(e) ? 'Mémoire du navigateur pleine (elle est partagée avec les autres applis Thousand Labs) : cette modification n\'est pas enregistrée. Exportez une sauvegarde, puis libérez de la place.' : 'Sauvegarde impossible : stockage du navigateur bloqué (navigation privée ?).'), 'err'); }
   SNAP.soon();
+}
+function tlFull(e) { return !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014);
 }
 
 /* ---------- Copies de secours automatiques (sur ce téléphone, sans Internet ni serveur) ----------
@@ -3100,6 +3102,8 @@ wo: [
    ========================================================================= */
 const I18N = {
 "en": {
+"Mémoire du navigateur pleine (elle est partagée avec les autres applis Thousand Labs) : cette modification n'est pas enregistrée. Exportez une sauvegarde, puis libérez de la place.": "Browser storage is full (it is shared with the other Thousand Labs apps): this change was not saved. Export a backup, then free up some space.",
+"Sauvegarde impossible : stockage du navigateur bloqué (navigation privée ?).": "Cannot save: browser storage is blocked (private browsing?).",
 "Copies automatiques": "Automatic copies",
 "À chaque modification, une copie est gardée sur ce téléphone, sans Internet (une par jour, {n} derniers jours). Si les données principales disparaissent, l'appli les récupère seule.": "Every change is also copied on this phone, without Internet (one per day, last {n} days). If the main data disappears, the app recovers it by itself.",
 "Restaurer une copie automatique": "Restore an automatic copy",
