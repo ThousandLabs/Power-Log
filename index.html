@@ -478,6 +478,25 @@ var ICO=(function(){
   return {svg:function(n,c){return svg([n,c])},strip:strip};
 })();
 </script>
+<script>
+/* =====================================================================
+   Transfert de licence (Thousand Labs)
+   Quand le client change de téléphone, il touche « Transférer ma licence » :
+   l'appli se verrouille sur CE téléphone et affiche un code de transfert.
+   Le client envoie ce code (avec la preuve de licence) au vendeur, qui le
+   vérifie dans Thousand Admin avant de donner un code pour le nouveau téléphone.
+   Le même code d'activation est ensuite refusé sur cet ancien téléphone.
+   ===================================================================== */
+var TLX=(function(){var A='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  function code(app,id,sig){return crypto.subtle.digest('SHA-256',new TextEncoder().encode('TL-XFER/v1|'+app+'|'+id+'|'+sig)).then(function(b){var d=new Uint8Array(b),s='';for(var i=0;i<10;i++)s+=A.charAt(d[i]%A.length);return s.slice(0,5)+'-'+s.slice(5)})}
+  function get(app){try{var r=JSON.parse(localStorage.getItem('tl_xfer_'+app));return r&&r.code&&r.sig?r:null}catch(e){return null}}
+  function set(app,r){try{localStorage.setItem('tl_xfer_'+app,JSON.stringify(r));return true}catch(e){return false}}
+  function clear(app){try{localStorage.removeItem('tl_xfer_'+app)}catch(e){}}
+  function msg(name,r,shownId){return 'Bonjour, je souhaite transférer ma licence '+name+' vers un nouveau téléphone.\n\nAncien identifiant : '+shownId+'\nCode de transfert : '+r.code+'\nPreuve de licence : '+r.sig+'\n\nNouvel identifiant : '+(r.nid||'')}
+  function send(wa,name,r,shownId){window.open('https://wa.me/'+wa+'?text='+encodeURIComponent(msg(name,r,shownId)),'_blank','noopener')}
+  function date(r){try{return new Date(r.at).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})}catch(e){return ''}}
+  return {code:code,get:get,set:set,clear:clear,msg:msg,send:send,date:date}})();
+</script>
 </head>
 <body>
 <div id="lock"></div>
@@ -1092,12 +1111,13 @@ function unb64u(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.lengt
 async function checkSig(sig) {
   try {
     const c = sigOf(sig); if (!c || !(window.crypto && crypto.subtle)) return false;
+    const xf = getLic().xfer; if (xf && xf.sig === c) return false; // code transféré vers un autre téléphone
       if (await legacyOk(getLic().dev, c)) return true;
     const k = await crypto.subtle.importKey('jwk', PL_PUB, {name: 'ECDSA', namedCurve: 'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name: 'ECDSA', hash: 'SHA-256'}, k, unb64u(c), new TextEncoder().encode(getLic().dev));
   } catch (e) { return false; }
 }
-function storeSig(c) { const lic = getLic(); lic.sig = c; lic.at = Date.now(); try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} LIC_OK = true; }
+function storeSig(c) { const lic = getLic(); lic.sig = c; lic.at = Date.now(); delete lic.xfer; try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) {} LIC_OK = true; }
 function unlockApp() { document.body.classList.remove('locked'); $('#lock').innerHTML = ''; buildNav(); render(); toast(t('{app} est activé. Bienvenue !', {app: APP})); }
 
 /* ---------- ESSAI GRATUIT 48 H ----------
@@ -1110,6 +1130,7 @@ const TRIAL_MS = 48 * 3600 * 1000;
 let trialTimer = null;
 function trialInfo() {
   const lic = getLic(), start = +lic.trial || 0;
+  if (lic.xfer) return {started: true, active: false, left: 0};
   if (!start) return {started: false, active: false, left: 0};
   const now = Date.now(), seen = Math.max(+lic.seen || 0, start);
   const left = now < seen - 10 * 60 * 1000 ? 0 : Math.max(0, start + TRIAL_MS - now);
@@ -1274,12 +1295,13 @@ function renderLock(err = '') {
     : ti.started
       ? ''
       : `<div class="trial-box"><b>🎁 ${t('Essayez gratuitement pendant 48 h')}</b><span class="hint">${t("Accès complet, sans paiement ni engagement. Ensuite, un code d'activation sera demandé ; vos données seront conservées.")}</span><button type="button" class="btn btn-primary btn-block" data-action="trial-start">${t("Commencer l'essai gratuit")}</button></div>`;
+  const xfHtml = lic.xfer ? `<div class="trial-box"><b>🔁 ${t('Licence transférée le {d}', {d: TLX.date(lic.xfer)})}</b><span class="hint">${t('Ce téléphone n\'est plus activé. Envoyez ce message à {team} pour recevoir le code de votre nouveau téléphone, en ajoutant à la fin le code du nouveau téléphone (affiché sur son écran d\'activation).', {team: TEAM})}</span><span class="label">${t('Code de transfert')}</span><div class="dev-id">${lic.xfer.code}</div><button type="button" class="btn btn-primary btn-block" data-action="xfer-send">💬 ${t('Envoyer le message de transfert')}</button><button type="button" class="btn btn-block" data-action="xfer-copy">📋 ${t('Copier le message')}</button></div>` : '';
   const msg = t('Bonjour, je souhaite obtenir {app}{price}. Mon code appareil : {dev}', {app: APP, price: PRICE ? ' (' + PRICE + ')' : '', dev: lic.dev});
   $('#lock').innerHTML = `<div class="lock-wrap"><div class="lock-card ${err ? 'shake' : ''}">
     <div class="flex between"><div><div class="brand" style="padding:0 0 4px"><div class="brand-logo">${BRANDMARK}</div>${APP}</div><p class="hint">${t('par')} ${TEAM}</p></div>
       <div class="lang-row">${Object.keys(LANGS).map(k => `<button class="chip ${lang() === k ? 'on' : ''}" data-action="lock-lang" data-id="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
-    <div>${ti.started && !ti.active ? `<h1 class="lock-title">${t('Gardez {app}', {app: APP})}</h1><p class="sub mt-s">${t('Votre essai de 48 h est terminé. Vos données sont conservées : activez l\'appli pour les retrouver.')}</p>` : `<h1 class="lock-title">${t('Activer {app}', {app: APP})}</h1><p class="sub mt-s">${t('Une seule fois, sans abonnement. Le code est lié à ce téléphone.')}</p>`}</div>
-    ${trialHtml}
+    <div>${lic.xfer ? `<h1 class="lock-title">${t('Activer {app} sur ce téléphone', {app: APP})}</h1><p class="sub mt-s">${t('Votre licence a été transférée. Pour réutiliser {app} ici, il faut un nouveau code pour ce téléphone.', {app: APP})}</p>` : ti.started && !ti.active ? `<h1 class="lock-title">${t('Gardez {app}', {app: APP})}</h1><p class="sub mt-s">${t('Votre essai de 48 h est terminé. Vos données sont conservées : activez l\'appli pour les retrouver.')}</p>` : `<h1 class="lock-title">${t('Activer {app}', {app: APP})}</h1><p class="sub mt-s">${t('Une seule fois, sans abonnement. Le code est lié à ce téléphone.')}</p>`}</div>
+    ${xfHtml}${trialHtml}
     ${(TLBUY.init({app:"Power Log",vous:true,unitWord:"appareil",unit:5000,dev:function(){return lic.dev},lang:function(){return lang()}}),TLBUY.html())}
     <form data-form="activate" class="stack" autocomplete="off">
       ${field(t("Code d'activation"), `<textarea class="input code-area" name="code" rows="3" placeholder="${esc(t('Collez ici le code reçu (tout le texte)'))}" autocomplete="off" spellcheck="false" required></textarea>`)}
@@ -2454,7 +2476,7 @@ views.reglages = () => {
     <p class="sub mt-s">${t('À chaque modification, une copie est gardée sur ce téléphone, sans Internet (une par jour, {n} derniers jours). Si les données principales disparaissent, l\'appli les récupère seule.', {n: SNAP_DAYS})}</p>
     <button class="btn btn-sm mt-s" data-action="snaps">🕘 ${t('Restaurer une copie automatique')}</button></div>
   <div class="card"><h2>🔑 ${t('Licence')}</h2><div class="list mt"><div class="kv"><span>${t('Statut')}</span>${LIC_OK ? `<span class="badge b-green">✓ ${t('Activée')}</span>` : `<span class="badge b-amber">🎁 ${t('Essai gratuit')}</span>`}</div>${LIC_OK ? '' : `<div class="kv"><span>${t('Temps restant')}</span><b>${fmtLeft(trialInfo().left)}</b></div>`}<div class="kv"><span>${t('Code appareil')}</span><b class="mono">${lic.dev}</b></div>${LIC_OK && lic.at ? `<div class="kv"><span>${t('Activée le')}</span><span>${new Date(lic.at).toLocaleDateString(LOCALE())}</span></div>` : ''}</div>
-    <div class="flex wrap mt">${LIC_OK ? '' : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div>${tlBrand(1)}</div>
+    <div class="flex wrap mt">${LIC_OK ? `<button class="btn btn-sm" data-action="xfer-open">🔁 ${t('Transférer ma licence vers un autre téléphone')}</button>` : `<button class="btn btn-sm btn-primary" data-action="trial-buy">🔑 ${t('Activer maintenant')}</button>`}<button class="btn btn-sm" data-action="lock-copy">${t('Copier le code appareil')}</button><a class="btn btn-sm btn-wa" href="${waLink(t('Bonjour, j\'ai une question sur {app}. Mon code appareil : {dev}', {app: APP, dev: lic.dev}))}" target="_blank" rel="noopener">💬 ${t('Contacter')} ${TEAM}</a></div>${tlBrand(1)}</div>
   <div class="card"><h2>📲 ${t("Installer l'application")}</h2><div class="mt-s">${TLI.html(APP, 'btn btn-primary')}</div><div class="flex wrap mt"><button class="btn btn-sm" data-action="go" data-id="guide">📘 ${t("Guide d'utilisation")}</button><button class="btn btn-sm" data-action="go" data-id="lexique">📖 ${t('Lexique')}</button></div>
     <h3 class="mt-l">⚠️ ${t('Zone sensible')}</h3><button class="btn btn-sm btn-danger mt-s" data-action="wipe">${t('Tout effacer')}</button><p class="hint mt-s">${t('« Tout effacer » conserve votre activation.')}</p></div>
   </div>
@@ -2666,6 +2688,15 @@ const actions = {
   'close-modal': closeModal,
   dismiss: id => { D.settings.dismissed[id] = today(); save(); render(); },
   // Licence
+  'xfer-open': () => openModal(t('Transférer ma licence'), `<form data-form="xfer" class="stack" autocomplete="off">
+    <p class="sub">${t('À utiliser si vous changez de téléphone. Après le transfert :')}</p>
+    <p class="sub">${t('1. {app} se verrouille sur ce téléphone et votre code actuel n\'y fonctionnera plus.', {app: APP})}<br>${t('2. Vous envoyez le message de transfert à {team} sur WhatsApp.', {team: TEAM})}<br>${t('3. Vous recevez un code pour votre nouveau téléphone.')}</p>
+    <div class="alert alert-amber"><span>💾 ${t('Faites d\'abord une sauvegarde de vos données (Réglages › Sauvegarde) et envoyez-la-vous : vous la restaurerez sur le nouveau téléphone.')}</span></div>
+    ${field(t('Code du nouveau téléphone (facultatif)'), '<input class="input" name="nid" maxlength="40" placeholder="PL-XXXX-XXXX" autocomplete="off" spellcheck="false">')}
+    <button class="btn btn-danger btn-block">${t('Confirmer le transfert')}</button>
+  </form>`),
+  'xfer-send': () => { const l = getLic(); if (l.xfer) TLX.send(CONTACT, APP, l.xfer, l.dev); },
+  'xfer-copy': () => { const l = getLic(); if (l.xfer) copyText(TLX.msg(APP, l.xfer, l.dev)); },
   'lock-copy': () => copyText(getLic().dev, t('Code appareil copié : {d}', {d: getLic().dev})),
   'lock-qr': () => { const d = getLic().dev; openModal(t('Votre code appareil'), `<p class="sub" style="text-align:center">${t('Le vendeur scanne ce QR code avec Thousand Admin.')}</p><div id="qrBox"></div><div class="dev-id" style="text-align:center">${d}</div>`); $('#qrBox').appendChild(QR.canvas('PLID:' + d, 600, 'M')); },
   'lock-scan': () => {
@@ -2782,9 +2813,19 @@ const changes = {
 };
 
 const forms = {
+  async xfer(f) {
+    const lic = getLic();
+    if (!LIC_OK || !lic.sig) return;
+    const nid = String(f.nid || '').trim().slice(0, 40);
+    const code = await TLX.code('power', lic.dev, lic.sig);
+    lic.xfer = {code, sig: lic.sig, nid, at: Date.now()}; delete lic.sig;
+    try { localStorage.setItem(LIC_KEY, JSON.stringify(lic)); } catch (e) { return toast(t('Transfert impossible : le stockage du navigateur est bloqué.'), 'err'); }
+    LIC_OK = false; clearInterval(trialTimer); closeModal(); renderLock(); window.scrollTo(0, 0);
+  },
   async activate(f) {
     const c = sigOf(f.code);
     if (!c) return renderLock(t("Collez votre code d'activation."));
+    const xl = getLic().xfer; if (xl && xl.sig === c) return renderLock(t('Ce code a été transféré vers un autre téléphone : il ne fonctionne plus ici. Demandez un code pour ce téléphone à {team}.', {team: TEAM}));
     if (!(window.crypto && crypto.subtle)) return renderLock(t("Ouvrez l'application depuis son lien https pour l'activer."));
     if (await checkSig(c)) { storeSig(c); unlockApp(); }
     else renderLock(t('Code incorrect. Copiez-le en entier : il doit correspondre à ce code appareil.'));
@@ -2977,7 +3018,7 @@ fr: [
 ['💰 Modifier la grille tarifaire', `<p>Les tarifs par défaut sont les tarifs officiels Senelec (grilles CRSE au 1er janvier 2026). Si la Senelec change ses prix, allez dans <b>Réglages → Grille tarifaire</b> : vous pouvez changer chaque tranche (borne et prix), la TVA, le seuil de TVA, la taxe communale, la redevance et le timbre, ajouter ou supprimer une tranche, ou créer une grille personnalisée. Le bouton « Revenir aux tarifs officiels » annule vos changements.</p>`],
 ['💾 Sauvegarde, changement de téléphone', `<ul><li>Toutes vos données restent <b>sur votre téléphone</b>, rien n'est envoyé sur Internet.</li>
 <li>Réglages → <b>Exporter mes données</b> créez un fichier. Envoyez-le-vous (WhatsApp, e-mail) au moins une fois par mois.</li>
-<li>Nouveau téléphone : installez l'appli, demandez un nouveau code d'activation (le code est lié à l'appareil), puis <b>Importer</b> votre fichier.</li>
+<li>Nouveau téléphone : sur l'ancien, exportez vos données puis Réglages › Licence › <b>Transférer ma licence</b> et envoyez le message de transfert à Thousand Labs. Installez l'appli sur le nouveau, activez-la avec le code reçu, puis <b>Importer</b> votre fichier.</li>
 <li><b>Copies automatiques</b> : à chaque modification, l'appli garde aussi une copie sur le téléphone (une par jour, 14 jours). Si les données disparaissent, elle les récupère seule ; Réglages → <b>Restaurer une copie automatique</b> permet aussi de revenir à un jour précédent.</li>
 <li>Vider complètement les données du site ou perdre le téléphone efface aussi ces copies : gardez toujours un fichier exporté récent.</li></ul>`],
 ['📝 Journal du jour et jours spéciaux', `<p>Menu <b>📝 Journal du jour</b> (ou le bouton + → « Noter ma journée »). Pour un jour donné, cochez ce qui sort de l'ordinaire : <b>personne(s) en plus</b> (ex : papa à la maison le week-end), invités, maison vide, forte chaleur, <b>coupure</b> (avec sa durée). Indiquez aussi, si vous voulez, les appareils utilisés : <b>nombre de fois</b> pour la machine à laver, le fer, la bouilloire… et <b>heures</b> pour la clim, la télé, l'ordinateur…</p><ul><li>L'appli estime ce que ces appareils ont consommé et le compare à ce que le compteur a vraiment mesuré ce jour-là.</li><li>Les jours spéciaux sont mis à part pour calculer votre semaine normale, et l'appli mesure leur effet réel (ex : « Personne en plus : +75 % »).</li><li>Vous pouvez noter un <b>jour à venir</b> : la prévision et les rappels en tiennent compte.</li><li><b>Corriger un jour</b> : si le chiffre calculé ne correspond pas à la réalité (relevé fait à une heure inhabituelle), saisissez la vraie consommation du jour ; l'écart est reporté sur les jours voisins pour que le total reste juste.</li><li><b>Couche-tard ?</b> Réglages → « Ma journée se termine à » (ex : 5 h) : ce que vous consommez après minuit compte pour la veille.</li></ul>`],
